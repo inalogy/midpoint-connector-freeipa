@@ -27,7 +27,7 @@
     </parent>
 
     <artifactId>connector-freeipa</artifactId>
-    <version>1.1.2.1</version>
+    <version>1.1.2.2</version>
     <packaging>jar</packaging>
 
     <name>FreeIPA Connector</name>
@@ -92,7 +92,7 @@
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
-            <version>20230227</version>
+            <version>20250107</version>
         </dependency>
 
     </dependencies>
