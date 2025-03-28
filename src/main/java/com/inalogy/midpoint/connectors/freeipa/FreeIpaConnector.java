@@ -45,6 +45,8 @@ import org.identityconnectors.framework.common.exceptions.ConnectorIOException;
 import org.identityconnectors.framework.common.exceptions.InvalidAttributeValueException;
 import org.identityconnectors.framework.common.exceptions.UnknownUidException;
 import org.identityconnectors.framework.common.objects.Attribute;
+import org.identityconnectors.framework.common.objects.AttributeBuilder;
+import org.identityconnectors.framework.common.objects.AttributeDelta;
 import org.identityconnectors.framework.common.objects.AttributeInfoBuilder;
 import org.identityconnectors.framework.common.objects.ConnectorObject;
 import org.identityconnectors.framework.common.objects.ConnectorObjectBuilder;
@@ -66,7 +68,7 @@ import org.identityconnectors.framework.spi.operations.DeleteOp;
 import org.identityconnectors.framework.spi.operations.SchemaOp;
 import org.identityconnectors.framework.spi.operations.SearchOp;
 import org.identityconnectors.framework.spi.operations.TestOp;
-import org.identityconnectors.framework.spi.operations.UpdateOp;
+import org.identityconnectors.framework.spi.operations.UpdateDeltaOp;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -77,16 +79,16 @@ import com.evolveum.polygon.rest.AbstractRestConnector;
  *
  */
 @ConnectorClass(displayNameKey = "freeipa.connector.display", configurationClass = FreeIpaConfiguration.class)
-public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration> implements TestOp, SchemaOp, CreateOp, UpdateOp, DeleteOp, SearchOp<FreeIpaFilter>  {
+public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration> implements TestOp, SchemaOp, CreateOp, UpdateDeltaOp, DeleteOp, SearchOp<FreeIpaFilter>  {
 
 	private static final Log LOG = Log.getLog(FreeIpaConnector.class);
-	
+
 	private static final String API_VERSION = "2.117";
-	
+
 	public static final String OBJECT_CLASS_USER = "user";
 	public static final String OBJECT_CLASS_GROUP = "group";
 	public static final String OBJECT_CLASS_ROLE = "role";
-	
+
 	private static final String[] CLASS_NAMES = {OBJECT_CLASS_USER, OBJECT_CLASS_GROUP, OBJECT_CLASS_ROLE};
 
 	public static final String ATTR_CN = "cn";
@@ -122,23 +124,23 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 	public static final String ATTR_NOPRIVATE = "noprivate";
 	public static final String ATTR_GIDNUMBER = "gidnumber";
-	
-	
+
+
 	// alternative config because MID-5883
 	private static final boolean DISABLE_ADMINISTRATIVE_STATUS = true; // workaround
-	
-	
-	
+
+
+
 	private static final List<String> USER_MULTIVALUED = Arrays.asList("krbprincipalname", "mail", "telephonenumber", "mobile", "pager", "facsimiletelephonenumber",
 			"carlicense", "ipasshpubkey", "ipauserauthtype", "userclass", "departmentnumber", "usercertificate", /*"noprivate", */"no_members");
-	
-	
+
+
 	// Free IPA schema cache
 	private static JSONObject schema = null;
 
 	// this should probably be done in a better way
 	private static Set<String> preserved_user_list = new HashSet<>();
-	
+
     @Override
     public void init(Configuration configuration) {
         LOG.info("Initializing {0} connector instance {1}", this.getClass().getSimpleName(), this);
@@ -187,8 +189,8 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         String password = null;
         if (!passwordList.isEmpty()) {
             password = passwordList.get(0);
-        }  
-        
+        }
+
         // log in
         HttpPost httpPost = new HttpPost(getConfiguration().getServiceAddress()+"/session/login_password");
 
@@ -216,45 +218,45 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         }
         return result;
     }
-		
+
     @Override
     public void dispose() {
         super.dispose();
         schema = null;
-    }    
+    }
 
 //    @Override
 //    public void checkAlive() {
 //        test();
 //        // TODO quicker test?
 //    }
-    
+
 	@Override
 	public void test() {
 		// test connection
 		JSONObject resp = callRequest(getIpaRequest("ping"));
 		LOG.info("Free IPA environment details: \n{0}", resp);
 
-        //client.close();   
+        //client.close();
 	}
-	
+
 
 	@Override
 	public Schema schema() {
 		SchemaBuilder schemaBuilder = new SchemaBuilder(FreeIpaConnector.class);
-		
+
 		if (schema==null) {
 			schema = callRequest(getIpaRequest("schema"));
 		}
-		
+
 		for (String className : CLASS_NAMES) {
 	        buildObjectClass(schemaBuilder, className);
 		}
 
         return schemaBuilder.build();
 	}
-	
-		
+
+
 
 	private void buildObjectClass(SchemaBuilder schemaBuilder, String className) {
 		ObjectClassInfoBuilder objClassBuilder = new ObjectClassInfoBuilder();
@@ -273,7 +275,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 		    		Boolean required = jsonParam.has("required") ? jsonParam.getBoolean("required") : true; //default is true
 		    		String type = jsonParam.getString("type"); // Principal, datetime, Certificate,  ... str, bool, int
-		    		
+
 		    		Boolean multivalue = jsonParam.has("multivalue") ? jsonParam.getBoolean("multivalue") : false; //default is false
 		    		String attributeName = jsonParam.getString("name");
 		    		AttributeInfoBuilder attrBuilder = new AttributeInfoBuilder(attributeName);
@@ -281,11 +283,11 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		    			attrBuilder.setType(Boolean.class);
 	//		    		else if ("int".equals(type)) // uidnumber, gidnumber problem
 	//		    			attrBuilder.setType(Integer.class);
-		    		
+
 		    		if (required)
 		    			attrBuilder.setRequired(true);
 		    		if (multivalue || ATTR_MEMBEROF_GROUP.equals(attributeName) || ATTR_MEMBEROF_ROLE.equals(attributeName)) // schema fix
-		    			attrBuilder.setMultiValued(true); 
+		    			attrBuilder.setMultiValued(true);
 
 		            objClassBuilder.addAttributeInfo(attrBuilder.build());
 		            if (ATTR_IPANTHOMEDIRECTORYDRIVE.equals(attributeName))
@@ -293,27 +295,27 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		    	}
 		    }
 		}
-		
+
 
 		AttributeInfoBuilder attrObjectClassBuilder = new AttributeInfoBuilder(ATTR_OBJECTCLASS); // missing from schema (workaround)
-		attrObjectClassBuilder.setMultiValued(true); 
-        objClassBuilder.addAttributeInfo(attrObjectClassBuilder.build());		
-		
-		
+		attrObjectClassBuilder.setMultiValued(true);
+        objClassBuilder.addAttributeInfo(attrObjectClassBuilder.build());
+
+
 		if (OBJECT_CLASS_USER.equals(className)) {
 			if (!DISABLE_ADMINISTRATIVE_STATUS) {
 				objClassBuilder.addAttributeInfo(OperationalAttributeInfos.ENABLE);     // status
 			}
-			
+
 			AttributeInfoBuilder attrIpaUniqueIdBuilder = new AttributeInfoBuilder(ATTR_IPAUNIQUEID); // missing from schema (workaround)
 	        objClassBuilder.addAttributeInfo(attrIpaUniqueIdBuilder.build());
-	        
+
 			AttributeInfoBuilder attrMepManagedEntryBuilder = new AttributeInfoBuilder(ATTR_MEPMANAGEDENTRY); // missing from schema (workaround)
 	        objClassBuilder.addAttributeInfo(attrMepManagedEntryBuilder.build());
 
 			AttributeInfoBuilder attrKrbLoginFailedCountBuilder = new AttributeInfoBuilder(ATTR_KRBLOGINFAILEDCOUNT); // missing from schema (workaround)
 	        objClassBuilder.addAttributeInfo(attrKrbLoginFailedCountBuilder.build());
-	        
+
 			AttributeInfoBuilder attrKrbExtraDataBuilder = new AttributeInfoBuilder(ATTR_KRBEXTRADATA); // missing from schema (workaround)
 	        objClassBuilder.addAttributeInfo(attrKrbExtraDataBuilder.build());
 
@@ -356,7 +358,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 			objClassBuilder.addAttributeInfo(attrPhysicalDeliveryOfficeNameBuilder.build());
 
 		}
-		
+
 		if (OBJECT_CLASS_GROUP.equals(className)) {
 			AttributeInfoBuilder attrIpaUniqueIdBuilder = new AttributeInfoBuilder(ATTR_IPAUNIQUEID); // missing from schema (workaround)
 	        objClassBuilder.addAttributeInfo(attrIpaUniqueIdBuilder.build());
@@ -364,7 +366,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 			AttributeInfoBuilder attrIpaNtSecurityIdentifierAuthBuilder = new AttributeInfoBuilder(ATTR_IPANTSECURITYIDENTIFIER); // missing from schema (workaround)
 	        objClassBuilder.addAttributeInfo(attrIpaNtSecurityIdentifierAuthBuilder.build());
 		}
-		
+
         schemaBuilder.defineObjectClass(objClassBuilder.build());
 	}
 
@@ -376,7 +378,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	private JSONObject getIpaRequest(String method, JSONArray params_array) {
 		return getIpaRequest(method, new JSONObject(), params_array);
 	}
-	
+
 	private JSONObject getIpaRequest(String method, JSONObject params_value, JSONArray params_array) {
 		JSONObject jo = new JSONObject();
         jo.put("method", method);
@@ -397,12 +399,12 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         jo.put("id", "0"); //TODO: request ID generation?
 
         LOG.info("json request: \n{0}", jo.toString());
-        
+
         return jo;
 	}
 
     protected JSONObject callRequest(JSONObject jo) {
-    	HttpPost request = new HttpPost(getConfiguration().getServiceAddress()+"/session/json"); 
+    	HttpPost request = new HttpPost(getConfiguration().getServiceAddress()+"/session/json");
         // FIXME: don't log request here - password field !!!
 //        LOG.info("request JSON: \n{0}", jo); //TODO: OK later,..
         request.setHeader("Referer", getConfiguration().getServiceAddress());
@@ -434,10 +436,10 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		}
         LOG.ok("response body: \n{0}", result);
         closeResponse(response);
-        
+
         return new JSONObject(result);
-    }	
-    
+    }
+
     private String processFreeIpaResponseErrors(CloseableHttpResponse response) throws ParseException, IOException{
     	// status is 200 in every time :(
 //      super.processResponseErrors(response);
@@ -445,17 +447,17 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
     	String result = EntityUtils.toString(response.getEntity());
         LOG.ok("Result body: {0}", result);
         JSONObject jo = new JSONObject(result);
-        
+
         if (jo.isNull("error")) {
         	// no error :)
         } else {
             JSONObject error = jo.getJSONObject("error");
-            
+
             String error_name = error.getString("name");
         	String error_message = error.getString("message");
-        	
+
         	// other specific codes...
-        	
+
         	if ("DuplicateEntry".equals(error_name)) {
                 closeResponse(response);
                 throw new AlreadyExistsException(error_message);
@@ -482,7 +484,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 	@Override
 	public void executeQuery(ObjectClass objectClass, FreeIpaFilter query, ResultsHandler handler,
-			OperationOptions options) 
+			OperationOptions options)
 	{
 		try {
             LOG.info("executeQuery on {0}, query: {1}, options: {2}", objectClass, query, options);
@@ -578,16 +580,16 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		LOG.ok("JSON User as input: \n{0}", user);
         ConnectorObjectBuilder builder = new ConnectorObjectBuilder();
         ObjectClass objectClass = new ObjectClass(OBJECT_CLASS_USER);
-        builder.setObjectClass(objectClass);        
+        builder.setObjectClass(objectClass);
         String uid = getMultiAsSingleValue(user, ATTR_UID);
         builder.setUid(new Uid(uid));
         builder.setName(new Name(uid));
-        
+
         Iterator<String> keys = user.keys();
 
         while(keys.hasNext()) {
             String key = keys.next();
-        	Object value = user.get(key); 
+        	Object value = user.get(key);
 //    		LOG.ok("JSON key:{0}={1}", key, value);
 			if(getConfiguration().getSupportPreserved()){
 				if (key.contains("preserved")) {
@@ -602,11 +604,11 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             } else if (value instanceof JSONArray) {
             	// multi value
             	JSONArray values = user.getJSONArray(key);
-            	
+
             	List<String> valueList = new ArrayList<String>();
             	for(int i = 0; i < values.length(); i++){
             		Object val = values.get(i);
-            		
+
             		if (val instanceof JSONObject) {
                 		// handling "__datetime__", "__base64__"...
                 		// "krbextradata": [{"__base64__": "AAJeR8pdcm9vdC9hZG1pbkBMQUIuQVJUSU4uSU8A"}]
@@ -622,12 +624,12 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             		else {
             			valueList.add(values.getString(i));
             		}
-            	}            	
+            	}
             	String[] valueArray = valueList.toArray(new String[0]);
                 builder.addAttribute(key, valueArray);
-            }	
-        }       
-        
+            }
+        }
+
         if (user.has(ATTR_NSACCOUNTLOCK) && !DISABLE_ADMINISTRATIVE_STATUS) {
             boolean enabled = !user.getBoolean(ATTR_NSACCOUNTLOCK);
             addAttr(builder, OperationalAttributes.ENABLE_NAME, enabled);
@@ -639,86 +641,86 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         return connectorObject;
 	}
 
-	
-	
+
+
 	private ConnectorObject convertRoleToConnectorObject(JSONObject role) throws IOException {
 		LOG.ok("JSON Role as input: \n{0}", role);
         ConnectorObjectBuilder builder = new ConnectorObjectBuilder();
         ObjectClass objectClass = new ObjectClass(OBJECT_CLASS_ROLE);
-        builder.setObjectClass(objectClass);        
+        builder.setObjectClass(objectClass);
         String uid = getMultiAsSingleValue(role, ATTR_CN);
         builder.setUid(new Uid(uid));
         builder.setName(new Name(uid));
-        
+
         Iterator<String> keys = role.keys();
 
         while(keys.hasNext()) {
             String key = keys.next();
-            
-        	Object value = role.get(key); 
+
+        	Object value = role.get(key);
             if (value instanceof JSONObject) {
             	// single value
             	addAttr(builder, key, value);
             } else if (value instanceof JSONArray) {
             	// multi value
             	JSONArray values = role.getJSONArray(key);
-            	
+
             	List<String> valueList = new ArrayList<String>();
             	for(int i = 0; i < values.length(); i++){
             		valueList.add(values.getString(i));
-            	}            	
+            	}
             	String[] valueArray = valueList.toArray(new String[0]);
                 builder.addAttribute(key, valueArray);
-            }	
-        }       
-     
+            }
+        }
+
         ConnectorObject connectorObject = builder.build();
         LOG.ok("convertRoleToConnectorObject, user: {0}, \n\tconnectorObject: {1}",
         		uid, connectorObject);
         return connectorObject;
 	}
-	
+
 	private ConnectorObject convertGroupToConnectorObject(JSONObject group) throws IOException {
 		LOG.ok("JSON Group as input: \n{0}", group);
         ConnectorObjectBuilder builder = new ConnectorObjectBuilder();
         ObjectClass objectClass = new ObjectClass(OBJECT_CLASS_GROUP);
-        builder.setObjectClass(objectClass);        
+        builder.setObjectClass(objectClass);
         String uid = getMultiAsSingleValue(group, ATTR_CN);
         builder.setUid(new Uid(uid));
         builder.setName(new Name(uid));
-        
+
         Iterator<String> keys = group.keys();
 
         while(keys.hasNext()) {
             String key = keys.next();
-            
-        	Object value = group.get(key); 
+
+        	Object value = group.get(key);
             if (value instanceof JSONObject) {
             	// single value
             	addAttr(builder, key, value);
             } else if (value instanceof JSONArray) {
             	// multi value
             	JSONArray values = group.getJSONArray(key);
-            	
+
             	List<String> valueList = new ArrayList<String>();
             	for(int i = 0; i < values.length(); i++){
             		valueList.add(values.getString(i));
-            	}            	
+            	}
             	String[] valueArray = valueList.toArray(new String[0]);
                 builder.addAttribute(key, valueArray);
-            }	
-        }       
-     
+            }
+        }
+
         ConnectorObject connectorObject = builder.build();
         LOG.ok("convertGroupToConnectorObject, group: {0}, \n\tconnectorObject: {1}",
         		uid, connectorObject);
         return connectorObject;
 	}
-		
+
 	private String getMultiAsSingleValue(JSONObject user, String attrName) {
 		if (!user.has(attrName))
 			return null;
-		
+
 		Object val = user.get(attrName);
 		if (val instanceof JSONObject) {
 			return user.getString(attrName);
@@ -735,54 +737,34 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	@Override
 	public Uid create(ObjectClass objectClass, Set<Attribute> attributes, OperationOptions options) {
 		if (objectClass.is(OBJECT_CLASS_USER)) {
-            return createOrUpdateUser(null, attributes);
-		} else if (objectClass.is(OBJECT_CLASS_ROLE)) {    
-            return createOrUpdateRole(null, attributes);
-		} else if (objectClass.is(OBJECT_CLASS_GROUP)) {    
-            return createOrUpdateGroup(null, attributes);
-        } else { 
+            return createUser(attributes);
+		} else if (objectClass.is(OBJECT_CLASS_ROLE)) {
+            return CreateRole(attributes);
+		} else if (objectClass.is(OBJECT_CLASS_GROUP)) {
+            return createGroup(attributes);
+        } else {
             // not found
             throw new UnsupportedOperationException("Unsupported object class " + objectClass);
         }
-	}
-	
-	@Override
-	public Uid update(ObjectClass objectClass, Uid uid, Set<Attribute> attributes, OperationOptions options) {
-		if (objectClass.is(OBJECT_CLASS_USER)) {
-            return createOrUpdateUser(uid, attributes);
-		} else if (objectClass.is(OBJECT_CLASS_ROLE)) {    
-            return createOrUpdateRole(uid, attributes);
-		} else if (objectClass.is(OBJECT_CLASS_GROUP)) {    
-            return createOrUpdateGroup(uid, attributes);
-        } else { 
-            // not found
-            throw new UnsupportedOperationException("Unsupported object class " + objectClass);
-        }	
 	}
 
-	private Uid createOrUpdateUser(Uid uid, Set<Attribute> attributes) {
-        LOG.ok("createOrUpdateUser, Uid: {0}, attributes: {1}", uid, attributes);
-        if (attributes == null || attributes.isEmpty()) {
-            LOG.ok("request ignored, empty attributes");
-            return uid;
-        }
-        boolean create = uid == null;
+
+	private Uid createUser( Set<Attribute> attributes) {
+        LOG.ok("createUser, attributes: {1}", attributes);
+
         JSONObject params = new JSONObject();
-        String loginNew = getStringAttr(attributes, Name.NAME); //old or new login to rename
-        if (StringUtil.isBlank(loginNew)) {
-        	loginNew = uid.getUidValue();
-        }
-        
-        if (create && StringUtil.isBlank(loginNew)) {
+        String icfsName = getStringAttr(attributes, Name.NAME); //old or new login to rename
+
+        if (StringUtil.isBlank(icfsName)) {
             throw new InvalidAttributeValueException("Missing mandatory attribute " + Name.NAME);
         }
-        if (create && StringUtil.isBlank(getStringAttr(attributes, ATTR_GIVENNAME))) {
+        if (StringUtil.isBlank(getStringAttr(attributes, ATTR_GIVENNAME))) {
             throw new InvalidAttributeValueException("Missing mandatory attribute " + ATTR_GIVENNAME);
         }
-        if (create && StringUtil.isBlank(getStringAttr(attributes, ATTR_SN))) {
+        if (StringUtil.isBlank(getStringAttr(attributes, ATTR_SN))) {
             throw new InvalidAttributeValueException("Missing mandatory attribute " + ATTR_SN);
         }
-        if (create && StringUtil.isBlank(getStringAttr(attributes, ATTR_CN))) {
+        if (StringUtil.isBlank(getStringAttr(attributes, ATTR_CN))) {
             throw new InvalidAttributeValueException("Missing mandatory attribute " + ATTR_CN);
         }
 
@@ -801,7 +783,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             password = passwordList.get(0);
         }
         // workaround for https://www.freeipa.org/page/New_Passwords_Expired
-        String krbPasswordExpiration = null; 
+        String krbPasswordExpiration = null;
         for (Attribute attr : attributes) {
         	String attrName = attr.getName();
         	List<Object> attrValue = attr.getValue();
@@ -833,13 +815,283 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
     			}
     		}
         }
-        
-        if (!create && !uid.getUidValue().equals(loginNew)) {
-        	params.put(ATTR_RENAME, loginNew); // rename user, https://www.redhat.com/archives/freeipa-users/2014-March/msg00072.html
-        }
-        
+
+
         JSONArray params_array = new JSONArray();
-        params_array.put(create ? loginNew : uid.getUidValue());
+        params_array.put(icfsName);
+		//if we support preserved accounts, undelete before anything else
+		if ( getConfiguration().getSupportPreserved() ){
+			if (preserved_user_list.contains(icfsName)){
+				JSONObject undelrequest = getIpaRequest("user_undel" , new JSONObject(), params_array);
+				try{
+					JSONObject undeljores = callRequest(undelrequest);
+					LOG.info("response after set user_undel UID: {0}, body: {1}", icfsName, undeljores);
+				} catch (Exception all_ex){
+					LOG.error("Error running undel, user doesn't exist? Error: {0}", all_ex);
+				}
+				preserved_user_list.remove(icfsName);
+			}
+		}
+
+		JSONObject request = getIpaRequest("user_add", params, params_array);
+
+        LOG.ok("user request (without password): {0}", request.toString());
+
+        if (password != null) {
+            params.put(ATTR_USERPASSWORD, password);
+        }
+
+        if (params.length()>0) {
+			JSONObject jores;
+			try {
+				jores = callRequest(request);
+				LOG.info("response UID: {0}, body: {1}", icfsName, jores);
+			} catch (AlreadyExistsException e) {
+				//shadow deleted, but account still available on resource - not a likely scenario in prod env
+				request = getIpaRequest("user_mod" , params, params_array);
+				jores = callRequest(request);
+				LOG.info("User already existed, ran user_mod - response UID: {0}, body: {1}", icfsName, jores);
+			}
+		}
+
+        handleEnable(attributes, icfsName, true);
+        handleRoles(attributes, icfsName, true);
+        handleGroups(attributes, icfsName, true);
+
+        if (krbPasswordExpiration != null) {
+        	// set again password expiration
+        	JSONObject paramsExp = new JSONObject();
+            paramsExp.put(ATTR_KRBPASSWORDEXPIRATION, krbPasswordExpiration);
+
+            JSONArray params_arrayExp = new JSONArray();
+            params_arrayExp.put(icfsName);
+
+        	JSONObject requestExp = getIpaRequest("user_mod", paramsExp, params_arrayExp);
+	        JSONObject jores = callRequest(requestExp);
+	        LOG.info("response after set krbpasswordexpiration UID: {0}, body: {1}", icfsName, jores);
+        }
+
+        return new Uid(icfsName);
+    }
+
+	@Override
+	public Set<AttributeDelta> updateDelta(ObjectClass objectClass, Uid uid, Set<AttributeDelta> modifications, OperationOptions operationOptions) {
+		if (objectClass.is(OBJECT_CLASS_USER)) {
+			updateDeltaUser(uid, modifications);
+			return null;
+		} else if (objectClass.is(OBJECT_CLASS_ROLE)) {
+			updateDeltaRole(uid, modifications);
+			return null;
+		} else if (objectClass.is(OBJECT_CLASS_GROUP)) {
+			updateDeltaGroup(uid, modifications);
+			return null;
+		} else {
+			// not found
+			throw new UnsupportedOperationException("Unsupported object class " + objectClass);
+		}
+	}
+
+	private void updateDeltaRole(Uid uid, Set<AttributeDelta> modifications) {
+		LOG.ok("updateDeltaRole, Uid: {0}, deltas: {1}", uid, modifications);
+		if (modifications == null || modifications.isEmpty()) {
+			LOG.ok("request ignored, empty modifications");
+			return;
+		}
+
+		Set<Attribute> attributes = new HashSet<>();
+		JSONObject currentRole = callRequest(
+				getIpaRequest("role_show", new JSONObject().put("all", true), new JSONArray().put(uid.getUidValue()))
+		).getJSONObject("result").getJSONObject("result");
+
+
+		for (AttributeDelta attributeDelta : modifications) {
+			String attrName = attributeDelta.getName();
+
+			if (attributeDelta.getValuesToAdd() != null || attributeDelta.getValuesToRemove() != null) {
+				LOG.ok("Handling multivalued attribute delta for attribute: {0}", attrName);
+
+
+				List<Object> currentValues = new ArrayList<>();
+				if (currentRole.has(attrName)) {
+					JSONArray existingValues = currentRole.getJSONArray(attrName);
+					for (int i = 0; i < existingValues.length(); i++) {
+						currentValues.add(existingValues.get(i));
+					}
+				}
+
+				LOG.ok("Current values for attribute {0}: {1}", attrName, currentValues);
+
+				if (attributeDelta.getValuesToAdd() != null) {
+					LOG.ok("Values to add for {0}: {1}", attrName, attributeDelta.getValuesToAdd());
+					for (Object valToAdd : attributeDelta.getValuesToAdd()) {
+						if (!currentValues.contains(valToAdd)) {
+							currentValues.add(valToAdd);
+						}
+					}
+				}
+
+				if (attributeDelta.getValuesToRemove() != null) {
+					LOG.ok("Values to remove for {0}: {1}", attrName, attributeDelta.getValuesToRemove());
+					currentValues.removeAll(attributeDelta.getValuesToRemove());
+				}
+
+				Attribute finalAttribute = currentValues.isEmpty()
+						? AttributeBuilder.build(attrName, (Object[]) null)
+						: AttributeBuilder.build(attrName, currentValues);
+
+				attributes.add(finalAttribute);
+
+			} else if (attributeDelta.getValuesToReplace() != null) {
+				for (Object value : attributeDelta.getValuesToReplace()) {
+					Attribute attribute = AttributeBuilder.build(attrName, value);
+					attributes.add(attribute);
+				}
+			}
+		}
+
+		JSONObject params = new JSONObject();
+		String roleNameNew = getStringAttr(attributes, Name.NAME);
+		if (StringUtil.isBlank(roleNameNew)) {
+			roleNameNew = uid.getUidValue();
+		}
+
+		putFieldValueIfExists(attributes, ATTR_DESCRIPTION, params);
+
+		if (!uid.getUidValue().equals(roleNameNew)) {
+			params.put(ATTR_RENAME, roleNameNew);
+			LOG.ok("Role rename requested from {0} to {1}", uid.getUidValue(), roleNameNew);
+		}
+
+		JSONArray params_array = new JSONArray().put(uid.getUidValue());
+		JSONObject request = getIpaRequest("role_mod", params, params_array);
+
+		LOG.ok("Role update request: {0}", request.toString());
+
+		if (params.length() > 0) {
+			JSONObject jores = callRequest(request);
+			LOG.info("Role updated, UID: {0}, response: {1}", roleNameNew, jores);
+		}
+	}
+
+	private void updateDeltaUser(Uid uid, Set<AttributeDelta> modifications) {
+		LOG.ok("updateDeltaUser, Uid: {0}", uid);
+		if (modifications == null || modifications.isEmpty()) {
+			LOG.ok("request ignored, empty attributes");
+			return;
+		}
+		Set<Attribute> attributes = new HashSet<>();
+
+		JSONObject currentUser = callRequest(
+				getIpaRequest("user_show", new JSONObject().put("all", true), new JSONArray().put(uid.getUidValue()))
+		).getJSONObject("result").getJSONObject("result");
+
+		for (AttributeDelta attributeDelta: modifications) {
+			if (attributeDelta.getValuesToAdd() != null || attributeDelta.getValuesToRemove() != null) {
+				LOG.ok("Handling multivalued attribute delta for attribute: {0}", attributeDelta.getName());
+				List<Object> currentValues = new ArrayList<>();
+				if (currentUser.has(attributeDelta.getName())) {
+					JSONArray existingValues = currentUser.getJSONArray(attributeDelta.getName());
+					for (int i = 0; i < existingValues.length(); i++) {
+						currentValues.add(existingValues.get(i));
+					}
+				}
+				LOG.ok("Current values before modification for attribute {0}: {1}", attributeDelta.getName(), currentValues);
+
+				if (attributeDelta.getValuesToAdd() != null) {
+					LOG.ok("Values to add for attribute {0}: {1}", attributeDelta.getName(), attributeDelta.getValuesToAdd());
+					for (Object valToAdd : attributeDelta.getValuesToAdd()) {
+						if (!currentValues.contains(valToAdd)) {
+							currentValues.add(valToAdd);
+						}
+					}
+				}
+
+				if (attributeDelta.getValuesToRemove() != null) {
+					LOG.ok("Values to remove for attribute {0}: {1}", attributeDelta.getName(), attributeDelta.getValuesToRemove());
+					currentValues.removeAll(attributeDelta.getValuesToRemove());
+				}
+
+				LOG.ok("Final values after add/remove for attribute {0}: {1}", attributeDelta.getName(), currentValues);
+
+				Attribute finalAttribute;
+				if (currentValues.isEmpty()) {
+					finalAttribute = AttributeBuilder.build(attributeDelta.getName(), (Object[]) null);
+					LOG.ok("Final attribute {0} is empty after modifications, will clear attribute", attributeDelta.getName());
+				} else {
+					finalAttribute = AttributeBuilder.build(attributeDelta.getName(), currentValues);
+					LOG.ok("Final attribute {0} to be updated with values: {1}", attributeDelta.getName(), currentValues);
+				}
+
+				attributes.add(finalAttribute);
+			}
+			else {
+				if (attributeDelta.getValuesToReplace() != null) {
+					for (Object value : attributeDelta.getValuesToReplace()) {
+						Attribute attribute = AttributeBuilder.build(attributeDelta.getName(), value);
+						attributes.add(attribute);
+					}
+				}
+			}
+		}
+		JSONObject params = new JSONObject();
+		String loginNew = getStringAttr(attributes, Name.NAME); //old or new login to rename
+		if (StringUtil.isBlank(loginNew)) {
+			loginNew = uid.getUidValue();
+		}
+		final List<String> passwordList = new ArrayList<String>(1);
+		GuardedString guardedPassword = getAttr(attributes, OperationalAttributeInfos.PASSWORD.getName(), GuardedString.class);
+		if (guardedPassword != null) {
+			guardedPassword.access(new GuardedString.Accessor() {
+				@Override
+				public void access(char[] chars) {
+					passwordList.add(new String(chars));
+				}
+			});
+		}
+		String password = null;
+		if (!passwordList.isEmpty()) {
+			password = passwordList.get(0);
+		}
+		// workaround for https://www.freeipa.org/page/New_Passwords_Expired
+		String krbPasswordExpiration = null;
+		for (Attribute attr : attributes) {
+			String attrName = attr.getName();
+			List<Object> attrValue = attr.getValue();
+			if (attrName.equals(FreeIpaConnector.ATTR_KRBPASSWORDEXPIRATION) && attrValue!=null) {
+				krbPasswordExpiration = (String) attrValue.get(0); // need to set password expiration
+			}
+			if (attrName.equals(OperationalAttributeInfos.ENABLE.getName())
+					|| attrName.equals(OperationalAttributeInfos.PASSWORD.getName())
+					|| attrName.equals(ATTR_UID)
+					|| attrName.equals(Name.NAME)
+					|| attrName.equals(FreeIpaConnector.ATTR_MEMBEROF_ROLE)
+					|| attrName.equals(FreeIpaConnector.ATTR_MEMBEROF_GROUP)) {
+				continue; // proceeed in different way...
+			}
+			if (USER_MULTIVALUED.contains(attrName)) {
+				JSONArray values = new JSONArray();
+				if (attrValue!=null) {
+					for (Object av: attrValue)
+						values.put(av);
+				}
+				params.put(attrName, values);
+			}
+			else {
+				if (attrValue==null) {
+					params.put(attrName, JSONObject.NULL);
+				}
+				else {
+					params.put(attrName, attrValue.get(0));
+				}
+			}
+		}
+
+		if (!uid.getUidValue().equals(loginNew)) {
+			params.put(ATTR_RENAME, loginNew); // rename user, https://www.redhat.com/archives/freeipa-users/2014-March/msg00072.html
+		}
+
+		JSONArray params_array = new JSONArray();
+		params_array.put(uid.getUidValue());
 		//if we support preserved accounts, undelete before anything else
 		if ( getConfiguration().getSupportPreserved() ){
 			if (preserved_user_list.contains(loginNew)){
@@ -854,15 +1106,15 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 			}
 		}
 
-		JSONObject request = getIpaRequest(create ? "user_add" : "user_mod", params, params_array);
-        
-        LOG.ok("user request (without password): {0}", request.toString());
+		JSONObject request = getIpaRequest("user_mod", params, params_array);
 
-        if (password != null) {
-            params.put(ATTR_USERPASSWORD, password);
-        }
+		LOG.ok("user request (without password): {0}", request.toString());
 
-        if (params.length()>0) {
+		if (password != null) {
+			params.put(ATTR_USERPASSWORD, password);
+		}
+
+		if (params.length()>0) {
 			JSONObject jores;
 			try {
 				jores = callRequest(request);
@@ -874,91 +1126,69 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 				LOG.info("User already existed, ran user_mod - response UID: {0}, body: {1}", loginNew, jores);
 			}
 		}
-        
-        handleEnable(attributes, loginNew, create);
-        handleRoles(attributes, loginNew, create);
-        handleGroups(attributes, loginNew, create);
-        
-        if (krbPasswordExpiration != null) {
-        	// set again password expiration
-        	JSONObject paramsExp = new JSONObject();
-            paramsExp.put(ATTR_KRBPASSWORDEXPIRATION, krbPasswordExpiration);
 
-            JSONArray params_arrayExp = new JSONArray();
-            params_arrayExp.put(create ? loginNew : uid.getUidValue());
-            
-        	JSONObject requestExp = getIpaRequest("user_mod", paramsExp, params_arrayExp);
-	        JSONObject jores = callRequest(requestExp);
-	        LOG.info("response after set krbpasswordexpiration UID: {0}, body: {1}", loginNew, jores);
-        }
-        
-        return new Uid(loginNew);
-    }    
-	
-	private Uid createOrUpdateRole(Uid uid, Set<Attribute> attributes) {
-        LOG.ok("createOrUpdateRole, Uid: {0}, attributes: {1}", uid, attributes);
-        if (attributes == null || attributes.isEmpty()) {
-            LOG.ok("request ignored, empty attributes");
-            return uid;
-        }
-        boolean create = uid == null;
+		handleEnable(attributes, loginNew, false);
+		handleRoles(attributes, loginNew, false);
+		handleGroups(attributes, loginNew, false);
+
+		if (krbPasswordExpiration != null) {
+			// set again password expiration
+			JSONObject paramsExp = new JSONObject();
+			paramsExp.put(ATTR_KRBPASSWORDEXPIRATION, krbPasswordExpiration);
+
+			JSONArray params_arrayExp = new JSONArray();
+			params_arrayExp.put(uid.getUidValue());
+
+			JSONObject requestExp = getIpaRequest("user_mod", paramsExp, params_arrayExp);
+			JSONObject jores = callRequest(requestExp);
+			LOG.info("response after set krbpasswordexpiration UID: {0}, body: {1}", loginNew, jores);
+		}
+
+	}
+
+	private Uid CreateRole(Set<Attribute> attributes) {
+        LOG.ok("CreateRole, attributes: {1}", attributes);
         JSONObject params = new JSONObject();
-        String roleNameNew = getStringAttr(attributes, Name.NAME); //old or new login to rename
-        if (StringUtil.isBlank(roleNameNew)) {
-        	roleNameNew = uid.getUidValue();
-        }
-        
-        if (create && StringUtil.isBlank(roleNameNew)) {
+        String icfsName = getStringAttr(attributes, Name.NAME); //old or new login to rename
+        if (StringUtil.isBlank(icfsName)) {
             throw new InvalidAttributeValueException("Missing mandatory attribute " + Name.NAME);
         }
-        
-        putFieldValueIfExists(attributes, ATTR_DESCRIPTION, params);
-                
 
-        if (!create && !uid.getUidValue().equals(roleNameNew)) {
-        	params.put(ATTR_RENAME, roleNameNew);
-        }
-        
+        putFieldValueIfExists(attributes, ATTR_DESCRIPTION, params);
+
         JSONArray params_array = new JSONArray();
-        params_array.put(create ? roleNameNew : uid.getUidValue());
-		JSONObject request = getIpaRequest(create ? "role_add" : "role_mod", params, params_array);
-        
+        params_array.put(icfsName);
+		JSONObject request = getIpaRequest("role_add", params, params_array);
+
         LOG.ok("Role request {0}", request.toString());
 
         if (params.length()>0) {
 	        JSONObject jores = callRequest(request);
-	        LOG.info("response UID: {0}, body: {1}", roleNameNew, jores);
+	        LOG.info("response UID: {0}, body: {1}", icfsName, jores);
         }
-        
-        return new Uid(roleNameNew);
-    }    	
-	
-	private Uid createOrUpdateGroup(Uid uid, Set<Attribute> attributes) {
-        LOG.ok("createOrUpdateGroup, Uid: {0}, attributes: {1}", uid, attributes);
-        if (attributes == null || attributes.isEmpty()) {
-            LOG.ok("request ignored, empty attributes");
-            return uid;
-        }
-        boolean create = uid == null;
+
+        return new Uid(icfsName);
+    }
+
+	private Uid createGroup(Set<Attribute> attributes) {
+        LOG.ok("createGroup, Uid: {0}, attributes: {1}",attributes);
         JSONObject params = new JSONObject();
-        String groupNameNew = getStringAttr(attributes, Name.NAME); //old or new login to rename
-        if (StringUtil.isBlank(groupNameNew)) {
-        	groupNameNew = uid.getUidValue();
-        }
-        
-        if (create && StringUtil.isBlank(groupNameNew)) {
+        String icfsName = getStringAttr(attributes, Name.NAME); //old or new login to rename
+
+
+        if (StringUtil.isBlank(icfsName)) {
             throw new InvalidAttributeValueException("Missing mandatory attribute " + Name.NAME);
         }
-        
+
         for (Attribute attr : attributes) {
         	String attrName = attr.getName();
         	if (attrName.equals(ATTR_UID)
         			|| attrName.equals(Name.NAME)) {
         		continue; // proceeed in different way...
         	}
-        	
+
         	List<Object> attrValue = attr.getValue();
-        	
+
     		if (USER_MULTIVALUED.contains(attrName)) {
         		JSONArray values = new JSONArray();
         		for (Object av: attrValue)
@@ -973,28 +1203,131 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 					params.put(attrName, attrValue.get(0));
 				}
     		}
-        }                
-        
-        if (!create && !uid.getUidValue().equals(groupNameNew)) {
-        	params.put(ATTR_RENAME, groupNameNew); // rename user, https://www.redhat.com/archives/freeipa-users/2014-March/msg00072.html
         }
-        
+
         JSONArray params_array = new JSONArray();
-        params_array.put(create ? groupNameNew : uid.getUidValue());
-		JSONObject request = getIpaRequest(create ? "group_add" : "group_mod", params, params_array);
-        
+        params_array.put(icfsName);
+		JSONObject request = getIpaRequest("group_add", params, params_array);
+
         LOG.ok("Group request {0}", request.toString());
 
         if (params.length()>0) {
 	        JSONObject jores = callRequest(request);
-	        LOG.info("response UID: {0}, body: {1}", groupNameNew, jores);
+	        LOG.info("response UID: {0}, body: {1}", icfsName, jores);
         }
-        
-        return new Uid(groupNameNew);
-    }    		
-	
-	
-    private void putFieldValueIfExists(Set<Attribute> attributes, String fieldName, JSONObject jo) {
+
+        return new Uid(icfsName);
+    }
+
+	private void updateDeltaGroup(Uid uid, Set<AttributeDelta> modifications) {
+		LOG.ok("updateDeltaGroup, Uid: {0}, deltas: {1}", uid, modifications);
+
+		if (modifications == null || modifications.isEmpty()) {
+			LOG.ok("request ignored, empty modifications");
+			return;
+		}
+
+		Set<Attribute> attributes = new HashSet<>();
+		JSONObject currentGroup = callRequest(
+				getIpaRequest("group_show", new JSONObject().put("all", true), new JSONArray().put(uid.getUidValue()))
+		).getJSONObject("result").getJSONObject("result");
+
+		for (AttributeDelta delta : modifications) {
+			String attrName = delta.getName();
+
+			// Handle multi-valued add/remove
+			if ((delta.getValuesToAdd() != null || delta.getValuesToRemove() != null)) {
+
+				LOG.ok("Handling multivalued attribute delta for attribute: {0}", attrName);
+
+				List<Object> currentValues = new ArrayList<>();
+				if (currentGroup.has(attrName)) {
+					JSONArray existing = currentGroup.getJSONArray(attrName);
+					for (int i = 0; i < existing.length(); i++) {
+						currentValues.add(existing.get(i));
+					}
+				}
+
+				if (delta.getValuesToAdd() != null) {
+					for (Object val : delta.getValuesToAdd()) {
+						if (!currentValues.contains(val)) {
+							currentValues.add(val);
+						}
+					}
+				}
+
+				if (delta.getValuesToRemove() != null) {
+					currentValues.removeAll(delta.getValuesToRemove());
+				}
+
+				Attribute finalAttr = currentValues.isEmpty()
+						? AttributeBuilder.build(attrName, (Object[]) null)
+						: AttributeBuilder.build(attrName, currentValues);
+
+				LOG.ok("Final merged values for group attribute {0}: {1}", attrName, currentValues);
+				attributes.add(finalAttr);
+			}
+
+			// Handle REPLACE values
+			else if (delta.getValuesToReplace() != null) {
+				List<Object> replace = delta.getValuesToReplace();
+				Attribute attr = (replace == null || replace.isEmpty())
+						? AttributeBuilder.build(attrName, (Object[]) null)
+						: AttributeBuilder.build(attrName, replace);
+				attributes.add(attr);
+			}
+		}
+
+		JSONObject params = new JSONObject();
+		String groupNameNew = getStringAttr(attributes, Name.NAME);
+		if (StringUtil.isBlank(groupNameNew)) {
+			groupNameNew = uid.getUidValue();
+		}
+
+		for (Attribute attr : attributes) {
+			String attrName = attr.getName();
+			if (attrName.equals(Name.NAME) || attrName.equals(ATTR_UID)) {
+				continue;
+			}
+
+			List<Object> val = attr.getValue();
+			if (USER_MULTIVALUED.contains(attrName)) {
+				JSONArray arr = new JSONArray();
+				if (val != null) {
+					for (Object o : val) {
+						arr.put(o);
+					}
+				}
+				params.put(attrName, arr);
+			} else {
+				if (val == null || val.isEmpty()) {
+					params.put(attrName, JSONObject.NULL);
+				} else {
+					params.put(attrName, val.get(0));
+				}
+			}
+		}
+
+		// Handle rename if NAME changed
+		if (!uid.getUidValue().equals(groupNameNew)) {
+			params.put(ATTR_RENAME, groupNameNew);
+			LOG.ok("Renaming group from {0} to {1}", uid.getUidValue(), groupNameNew);
+		}
+
+		JSONArray params_array = new JSONArray().put(uid.getUidValue());
+		JSONObject request = getIpaRequest("group_mod", params, params_array);
+
+		LOG.ok("Group update request: {0}", request.toString());
+
+		if (!params.isEmpty()) {
+			JSONObject response = callRequest(request);
+			LOG.info("Group updated: {0}, response: {1}", groupNameNew, response);
+		}
+	}
+
+
+
+	private void putFieldValueIfExists(Set<Attribute> attributes, String fieldName, JSONObject jo) {
         String value = getStringAttr(attributes, fieldName);
         if (value != null) {
             jo.put(fieldName, value);
@@ -1109,7 +1442,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 				}
     		}
     	}
-	}    
+	}
 	private void addRemoveMember(String command, String login, String roleOrGroupName) {
         LOG.ok("run command {0} on user {1} and {2}", command, login, roleOrGroupName);
 
@@ -1117,10 +1450,10 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 		JSONArray params_array = new JSONArray();
         params_array.put(roleOrGroupName);
-        
+
 		JSONObject request = getIpaRequest(command, params_value, params_array);
 		JSONObject jores = callRequest(request);
-		
+
         LOG.info("response body: {0}", jores, login);
 	}
 
@@ -1131,7 +1464,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         	String command = enable ? "user_enable": "user_disable";
             JSONArray params_array = new JSONArray();
             params_array.put(login);
-        	
+
     		JSONObject request = getIpaRequest(command, new JSONObject(), params_array);
     		JSONObject jores = callRequest(request);
             LOG.info("response body: {0} for command: {1}", jores, command);
@@ -1168,10 +1501,10 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
     		JSONObject request = getIpaRequest("group_del", new JSONObject(), params_array);
     		JSONObject jores = callRequest(request);
             LOG.info("response body: {0} for group deletion for uid: ", jores, uid);
-        } else { 
+        } else {
             // not found
             throw new UnsupportedOperationException("Unsupported object class " + objectClass);
         }
-	}	
+	}
 
 }
