@@ -101,6 +101,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	public static final String ATTR_NSACCOUNTLOCK = "nsaccountlock";
 	public static final String ATTR_MEMBEROF_GROUP = "memberof_group";
 	public static final String ATTR_MEMBEROF_ROLE = "memberof_role";
+	public static final String ATTR_MEMBER_USER = "member_user";
 	public static final String ATTR_DESCRIPTION = "description";
 	public static final String ATTR_PHYSICALDELIVERYOFFICENAME = "physicaldeliveryofficename";
 	public static final String ATTR_KRBPASSWORDEXPIRATION = "krbpasswordexpiration";
@@ -286,7 +287,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 		    		if (required)
 		    			attrBuilder.setRequired(true);
-		    		if (multivalue || ATTR_MEMBEROF_GROUP.equals(attributeName) || ATTR_MEMBEROF_ROLE.equals(attributeName)) // schema fix
+		    		if (multivalue || ATTR_MEMBEROF_GROUP.equals(attributeName) || ATTR_MEMBEROF_ROLE.equals(attributeName) || ATTR_MEMBER_USER.equals(attributeName)) // schema fix
 		    			attrBuilder.setMultiValued(true);
 
 		            objClassBuilder.addAttributeInfo(attrBuilder.build());
