@@ -55,7 +55,7 @@ jobs:
         run: |-
           gh release create ${GIT_TAG} \
             --title "Release ${GIT_TAG}" \
-            ---notes-file latest_changelog.md \
+            --notes-file latest_changelog.md \
             target/connector-freeipa-*.jar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
