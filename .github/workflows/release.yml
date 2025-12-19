@@ -12,7 +12,7 @@ on:
   push:
     # Sequence of patterns matched against refs/tags
     tags:
-      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+      - 'v*.*.*.*' # Push events to matching v*.*.*.*, i.e. v1.0.0.0, v20.15.10.1
 
 permissions:
   contents: write
@@ -43,11 +43,19 @@ jobs:
           path: target/connector-freeipa-*.jar
           if-no-files-found: error
 
+      - name: Extract Latest Changelog Entry
+        id: changelog
+        run: |
+          awk '/^## \[/{if (p) exit; p=1} p' CHANGELOG.md > latest_changelog.md
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          cat latest_changelog.md >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Create Release
         run: |-
           gh release create ${GIT_TAG} \
             --title "Release ${GIT_TAG}" \
-            --generate-notes \
+            --notes-file latest_changelog.md \
             target/connector-freeipa-*.jar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
