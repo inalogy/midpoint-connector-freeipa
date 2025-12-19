@@ -55,7 +55,8 @@ jobs:
         run: |-
           gh release create ${GIT_TAG} \
             --title "Release ${GIT_TAG}" \
-            --generate-notes ${{ env.CHANGELOG }}
+            --generate-notes \
+          "${{ env.CHANGELOG }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_TAG: ${{ github.ref_name }} # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
