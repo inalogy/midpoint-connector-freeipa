@@ -4,7 +4,7 @@ Polygon/ConnId connector for FreeIPA
 
 ## Description
 
-Connector for [FreeIPA](https://www.freeipa.org/) using [REST API](https://www.freeipa.org/page/API_Examples). 
+Connector for [FreeIPA](https://www.freeipa.org/) using [REST API](https://www.freeipa.org/page/API_Examples).
 
 ## Capabilities and Features
 
@@ -13,9 +13,9 @@ Connector for [FreeIPA](https://www.freeipa.org/) using [REST API](https://www.f
 * Live Synchronization: No
 * Password: YES
 * Activation: YES
-* Script execution: No 
+* Script execution: No
 
-FreeIPA Connector contains support for USER, ROLE and GROUP entity.  
+FreeIPA Connector contains support for USER, ROLE and GROUP entity.
 
 ## Build
 
@@ -25,12 +25,16 @@ FreeIPA Connector contains support for USER, ROLE and GROUP entity.
 mvn clean install
 ```
 
-After successful the build, you can find `connector-freeipa-1.1.2.1.jar` in `target` directory.
+> [!note]
+>
+> The version number, contained within the jar name, will correspond the one set for the project within the `pom.xml`.
+
+After successful the build, you can find `connector-freeipa-x.y.z.b.jar` in `target` directory.
 
 ## Configuring resource
 
 * create user in FreeIPA
-* set membership to user groups: ipausers, trust admins, admins 
+* set membership to user groups: ipausers, trust admins, admins
 * inspire by [sample](https://github.com/inalogy/midpoint-connector-freeipa/tree/master/sample) to configure your own resource
 
 ## Debugging
@@ -38,7 +42,7 @@ After successful the build, you can find `connector-freeipa-1.1.2.1.jar` in `tar
 * Verify if service account has set password never expire, has "User authentication types" "Password" and not needed to change password at first log on.
 * Try to log in with created service account (user) to FreeIPA web GUI & verify if you have required permissions to create/update/delete user, create/update/delete groups & roles and his memberships.
 * Set up Logger for package "com.inalogy.midpoint.connectors.freeipa" to TRACE in midpoint over System/Logging/Loggers & verify midpoint.log for error details.
-* In some cases FreeIPA misconfiguration cause to return HTML error page instead of JSON and this is showed as error message in Test Connection "org.json.JSONException(A JSONObject text must begin with '{' at 1 [character 2 line 1])"
+* In some cases FreeIPA misconfiguration cause to return HTML error page instead of JSON and this is shown as error message in Test Connection "org.json.JSONException(A JSONObject text must begin with '{' at 1 [character 2 line 1])"
 * Set up Logger for package "org.apache.http" to TRACE in midpoint over System/Logging/Loggers & verify midpoint.log for other error details.
 
 ## License
@@ -47,5 +51,5 @@ Licensed under the [Apache License 2.0](/LICENSE).
 
 ## Status
 
-FreeIPA Connector is intended for production use. Tested with MidPoint version 4.6. The connector was introduced as a contribution to midPoint project by [Inalogy](https://www.inalogy.com) and is not officially supported by Evolveum.
+FreeIPA Connector is intended for production use. Tested with MidPoint version `4.9`. The connector was introduced as a contribution to midPoint project by [Inalogy](https://www.inalogy.com) and is not officially supported by Evolveum.
 If you need support, please contact info@inalogy.com.
