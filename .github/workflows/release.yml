@@ -55,8 +55,8 @@ jobs:
         run: |-
           gh release create ${GIT_TAG} \
             --title "Release ${GIT_TAG}" \
-            --generate-notes \
-          "${{ env.CHANGELOG }}"
+            ---notes-file latest_changelog.md \
+            target/connector-freeipa-*.jar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_TAG: ${{ github.ref_name }} # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
