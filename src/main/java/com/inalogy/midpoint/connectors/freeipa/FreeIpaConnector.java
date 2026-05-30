@@ -489,11 +489,13 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	{
 		try {
             LOG.info("executeQuery on {0}, query: {1}, options: {2}", objectClass, query, options);
+            String lookupKey = (query == null) ? null : query.getLookupKey();
+
             if (objectClass.is(OBJECT_CLASS_USER)) {
                 //find by Login name (uid)
-                if (query != null && query.byUid != null) {
+                if (lookupKey != null) {
                 	JSONArray params = new JSONArray();
-                	params.put(query.byUid);
+                	params.put(lookupKey);
                 	JSONObject user = callRequest(getIpaRequest("user_show", new JSONObject().put("all", true), params));
 //                	JSONObject status = callRequest(getIpaRequest("user_status", params));
                     ConnectorObject connectorObject = convertUserToConnectorObject(user.getJSONObject("result").getJSONObject("result"));
@@ -526,9 +528,9 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             }
             else if (objectClass.is(OBJECT_CLASS_ROLE)) {
                 //find by role name (uid)
-                if (query != null && query.byUid != null) {
+                if (lookupKey != null) {
                 	JSONArray params = new JSONArray();
-                	params.put(query.byUid);
+                	params.put(lookupKey);
                 	JSONObject role = callRequest(getIpaRequest("role_show", new JSONObject().put("all", true), params));
                     ConnectorObject connectorObject = convertRoleToConnectorObject(role.getJSONObject("result").getJSONObject("result"));
                     handler.handle(connectorObject);
@@ -548,9 +550,9 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             }
             else if (objectClass.is(OBJECT_CLASS_GROUP)) {
                 //find by group name (uid)
-                if (query != null && query.byUid != null) {
+                if (lookupKey != null) {
                 	JSONArray params = new JSONArray();
-                	params.put(query.byUid);
+                	params.put(lookupKey);
                 	JSONObject group = callRequest(getIpaRequest("group_show", new JSONObject().put("all", true), params));
                     ConnectorObject connectorObject = convertGroupToConnectorObject(group.getJSONObject("result").getJSONObject("result"));
                     handler.handle(connectorObject);

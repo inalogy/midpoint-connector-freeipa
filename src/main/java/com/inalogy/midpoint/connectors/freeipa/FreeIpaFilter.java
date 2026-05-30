@@ -25,6 +25,22 @@ public class FreeIpaFilter {
     public String byUid;
     public String byCn;
 
+    /**
+     * Returns the first non-null precise-lookup key (uid → name → cn).
+     *
+     * For groups and roles, all three fields carry the same `cn` value — the
+     * convert*ToConnectorObject methods set Uid, Name, and the cn attribute
+     * from the LDAP `cn`. For users, byUid and byName both carry the login
+     * (`uid`); byCn would carry the user's full name, which `user_show` does
+     * not accept — falling through to that case results in an empty search,
+     * which is correct behaviour (no user has the given `cn` as login).
+     */
+    public String getLookupKey() {
+        if (byUid != null) return byUid;
+        if (byName != null) return byName;
+        return byCn;
+    }
+
     @Override
     public String toString() {
         return "FreeIpaFilter {" +
