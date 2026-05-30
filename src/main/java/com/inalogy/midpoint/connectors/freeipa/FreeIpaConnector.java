@@ -287,7 +287,14 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 		    		if (required)
 		    			attrBuilder.setRequired(true);
-		    		if (multivalue || ATTR_MEMBEROF_GROUP.equals(attributeName) || ATTR_MEMBEROF_ROLE.equals(attributeName) || ATTR_MEMBER_USER.equals(attributeName)) // schema fix
+		    		// Schema fix: FreeIPA's introspected schema reports memberof_* / member_*
+		    		// attributes as single-valued, but they're inherently multi-valued (a user
+		    		// can belong to many groups/roles/sudorules/hbacrules; a group can have many
+		    		// members). Covers extended schema (sudorule, hbacrule, hostgroup, …) without
+		    		// needing to enumerate each one.
+		    		boolean isMemberAttr = attributeName.startsWith("memberof_")
+		    				|| attributeName.startsWith("member_");
+		    		if (multivalue || isMemberAttr)
 		    			attrBuilder.setMultiValued(true);
 
 		            objClassBuilder.addAttributeInfo(attrBuilder.build());
