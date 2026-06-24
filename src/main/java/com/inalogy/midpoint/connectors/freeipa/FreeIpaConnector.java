@@ -293,7 +293,10 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		    		// members). Covers extended schema (sudorule, hbacrule, hostgroup, …) without
 		    		// needing to enumerate each one.
 		    		boolean isMemberAttr = attributeName.startsWith("memberof_")
-		    				|| attributeName.startsWith("member_");
+		    				|| attributeName.startsWith("member_")
+                            || attributeName.startsWith("memberindirect_")
+                            || attributeName.startsWith("memberofindirect_")
+                            || attributeName.startsWith("membermanager_");
 		    		if (multivalue || isMemberAttr)
 		    			attrBuilder.setMultiValued(true);
 
@@ -800,8 +803,8 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         	if (attrName.equals(FreeIpaConnector.ATTR_KRBPASSWORDEXPIRATION) && attrValue!=null) {
         		krbPasswordExpiration = (String) attrValue.get(0); // need to set password expiration
         	}
-        	if (attrName.equals(OperationalAttributeInfos.ENABLE.getName())  
-        			|| attrName.equals(OperationalAttributeInfos.PASSWORD.getName()) 
+        	if (attrName.equals(OperationalAttributeInfos.ENABLE.getName())
+        			|| attrName.equals(OperationalAttributeInfos.PASSWORD.getName())
         			|| attrName.equals(ATTR_UID)
         			|| attrName.equals(Name.NAME)
         			|| attrName.equals(FreeIpaConnector.ATTR_MEMBEROF_ROLE)
