@@ -7,3 +7,12 @@ make.bat
 TestClient.java
 /.idea/
 /connector-freeipa.iml
+
+# Historical reference only - the decompiled 1.2.9.0 build. Kept on disk for
+# provenance, deliberately not part of the source tree: it is Fernflower output,
+# not original source, and must never be a build input.
+/ConnectorFreeIPA-1.2.9.0/
+
+# Resource switch files generated from a live instance - they carry that
+# instance's encrypted password cipher. Regenerate them, never commit them.
+/FreeIPA-1*.xml
