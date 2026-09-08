@@ -1,7 +1,7 @@
-# connector-freeipa 1.3.0.1 — code changes and reasoning
+# connector-freeipa 1.3.1.0 — code changes and reasoning
 
 This document covers every change between the upstream connector (`1.2.1.1`) and this
-branch (`1.3.0.1`), why each was made, and what behaviour changes as a result.
+branch (`1.3.1.0`), why each was made, and what behaviour changes as a result.
 
 It exists because the diff alone is misleading. Several changes *revert* an apparently
 obvious improvement back to what upstream did, because upstream was right for a reason that
@@ -9,6 +9,29 @@ is not visible in the code. Those are marked **Reverted to upstream behaviour** 
 records why, so the next reader does not "fix" it again.
 
 ---
+
+## 0. What this document covers, and what it does not
+
+**The connector is general-purpose.** It has to work against any midPoint instance and any
+FreeIPA deployment, so nothing in `src/` is allowed to depend on the dev instance this work
+was developed against. Two rules follow from that, and both were breached during development
+and then corrected:
+
+- **Attribute sets come from FreeIPA, not from a list in the connector.** Version, installed
+  plugins and local schema extensions all change what a deployment returns, so every object
+  class is enumerated from FreeIPA's own introspected schema. Hand-maintained lists appear
+  only as a gap-filler for attributes a deployment's schema demonstrably omits, and they are
+  additive — introspection always wins.
+- **Decisions are structural, never based on FreeIPA's message text.** FreeIPA localises its
+  messages, so matching on English wording works only against an English-language server.
+
+Sections 1-6 are the connector. **Section 7 is the configuration of one particular
+deployment** — resource, metaroles and tasks — recorded here because the connector changes
+cannot be judged without it, and because fixing the connector exposed several configuration
+defects. None of section 7 ships with the connector: those files live in the customer project
+and are versioned there. Anyone deploying this connector elsewhere needs their own
+equivalent, and should read section 7 as worked example rather than as installation
+instructions.
 
 ## 1. Scope and provenance
 
@@ -50,11 +73,11 @@ Identical to upstream. No files added, moved or removed.
 .github/workflows/release.yml
 .gitignore                                    modified — excludes the 1.2.9.0 reference tree
 .run/connector-freeipa [clean,install].run.xml
-CHANGELOG.md                                  modified — 1.3.0.1 and 1.3.0.0 entries
+CHANGELOG.md                                  modified — 1.3.1.0, 1.3.0.1, 1.3.0.0 entries
 CHANGES.md                                    new — this document
 LICENSE
-README.md                                     unchanged — byte-identical to edee145
-pom.xml                                       modified — version 1.2.1.1 -> 1.3.0.1
+README.md                                     modified — capabilities, membership, upgrading
+pom.xml                                       modified — version 1.2.1.1 -> 1.3.1.0
 sample/
     metarole-FreeIPA-Group.xml
     metarole-FreeIPA-Role.xml
@@ -90,27 +113,22 @@ production. A diff here would be decompiler artefact, not divergence:
 
 ## 3. What the connector can do now
 
-| Capability | 1.2.1.1 | 1.3.0.1 |
+| Capability | 1.2.1.1 | 1.3.1.0 |
 |---|---|---|
-| Object classes | `user`, `group`, `role` | **+ `hostgroup`, `hbacrule`** |
+| Object classes | `user`, `group`, `role` | **+ `hostgroup`, `hbacrule`, `host`** |
 | HBAC user membership | — | add · remove · replace |
 | HBAC host membership | — | add · remove · replace |
 | Host-group membership | — | add · remove · replace |
-| Rename | user, group, role | **+ hostgroup, hbacrule** |
+| Rename | user, group, role | **+ hostgroup, hbacrule** (refused for host — fqdn is immutable) |
 | Membership failure reporting | silently discarded | **raised** |
 | Create atomicity (new classes) | — | rolled back on failure |
 | Live sync · script execution · paging | no | no (unchanged) |
 
-`README.md` is left byte-identical to upstream, so this document is the only place the new
-capabilities are written down. Two points a resource author needs and will not find there:
-
-- **Activation goes through `nsaccountlock`, not midPoint's native activation capability.**
-  The connector deliberately does not advertise `__ENABLE__` — see
-  `DISABLE_ADMINISTRATIVE_STATUS`, a workaround for MID-5883 — so map `ri:nsaccountlock`
-  rather than relying on `administrativeStatus` alone. Unchanged from upstream, but the
-  README's "Activation: YES" overstates it and always has.
-- **Host-group and HBAC-rule membership cannot be set through `*_mod`.** The connector
-  maintains it with the `*_add_member` / `*_remove_member` family; see §4.4.
+`README.md` now states these accurately: the six object classes, activation through
+`nsaccountlock` rather than midPoint's native capability, the membership semantics, and the
+schema-refresh step required on upgrade. It points here for the reasoning. Upstream's
+"USER, ROLE and GROUP" and unqualified "Activation: YES" were both wrong before — the
+activation claim had always been misleading, independently of this release.
 
 ---
 
@@ -121,17 +139,32 @@ capabilities are written down. Two points a resource author needs and will not f
 `CLASS_NAMES` grows from three entries to five, with matching branches in `executeQuery`,
 `create`, `updateDelta` and `delete`.
 
-### 4.2 Static schemas — **Reverted to upstream behaviour**
+### 4.2 `hostgroup` and `hbacrule` are enumerated from FreeIPA but treated as untyped
 
-`buildStaticObjectClass()` declares the complete attribute set for these two classes, and
-`buildObjectClass()` skips FreeIPA's introspected schema for them entirely
-(`useIntrospection`).
+These two classes need care because FreeIPA describes them inaccurately. The two available
+failure modes pull in opposite directions:
 
-An earlier revision of this work made the static declaration a *supplement* layered on top of
-introspection — strictly more information, apparently better. It was not, and it is worth
-being explicit about why, because the reasoning looks wrong until you see the data.
+- **Trusting FreeIPA's declared types** makes midPoint reject every object of the class.
+- **Declaring the attribute set by hand** risks omitting something a deployment returns, and
+  an attribute midPoint has no definition for makes it recurse until it throws
+  `StackOverflowError` rather than reporting a clear error (§4.3).
 
-FreeIPA **does** report both classes. It reports them incorrectly:
+`1.2.9.0` took the second route and declared both classes entirely by hand. This release
+takes neither wholesale: attributes are **enumerated from FreeIPA's introspected schema**, so
+nothing a deployment returns can be missing, while the **declared type is ignored** for these
+two classes (`UNTRUSTED_TYPE_CLASSES`), leaving every attribute untyped — which is what the
+JSON-RPC layer actually sends. Cardinality is decided separately, by prefix, in
+`isMembershipAttribute()`.
+
+That matters for portability: a hand-maintained list is only ever correct for the FreeIPA it
+was written against, and this one was written against a single 4.12.2 lab. Enumeration works
+on any version. `buildStaticObjectClass()` survives only as an additive safety net for a
+deployment whose schema omits these classes; introspection runs first and wins, so on a
+FreeIPA that reports them it contributes nothing.
+
+An intermediate revision made the hand-written list a *supplement* on top of introspection
+while still honouring FreeIPA's types. That is the one combination that does not work, and
+it is worth recording why:
 
 - `ipaenabledflag` is declared `type: "bool"`, but `hbacrule_show` answers with the string
   `"TRUE"`. Declared `Boolean`, delivered `String`, so midPoint rejected **every** HBAC rule
@@ -184,6 +217,38 @@ Two details worth knowing:
   back. Diffing against the wrong name would conclude the group is empty and never remove
   anything.
 
+### 4.4a The `host` object class
+
+Added in 1.3.1.0, to resolve the host-binding problem in §7. FreeIPA host entries are keyed
+on `fqdn`, not `cn`, so `primaryKeyAttr()` selects the key per object class and the shared
+converter, create and update paths are keyed generically rather than on `cn`.
+
+`host_add` always sends `force=true`: without it FreeIPA refuses any name with no DNS A
+record, which is the normal case when host entries are provisioned ahead of DNS. FreeIPA
+still requires a fully-qualified name, so the resource must map `icfs:name` to an FQDN —
+a bare VM identifier is rejected.
+
+`host` is enumerated from FreeIPA's introspected schema and its declared types are honoured,
+because they are accurate: the three boolean attributes — `ipakrbokasdelegate`,
+`ipakrboktoauthasdelegate`, `ipakrbrequirespreauth` — were verified to come back as real JSON
+booleans, so `host` does not share the `ipaenabledflag` inconsistency that forces
+`hostgroup` and `hbacrule` to be treated as untyped (§4.2).
+
+Four attributes still need declaring by hand, because `host_show` returns them while
+introspection describes none of them: `cn`, `krbextradata`, `krblastpwdchange` and
+`krbpwdpolicyreference`. The three Kerberos ones are exactly what upstream already
+hand-declares for `user`, so this is a consistent FreeIPA omission rather than something
+peculiar to `host`. They were found the way the rest of this release was — by importing a
+real host and reading the error.
+
+Rename is refused with an explanatory message rather than attempted: a host's `fqdn` is
+immutable in FreeIPA because the Kerberos principal and any issued certificates derive from
+it, and `host_mod` has no rename option.
+
+`managedby_` was added to the membership prefixes, which makes `managedby_host` multi-valued,
+optional and skipped on write — it is maintained with `host_add_managedby` /
+`host_remove_managedby`, and sending it to `host_mod` would draw error 3005.
+
 ### 4.5 `ipaenabledflag` is routed to enable/disable
 
 FreeIPA rejects `ipaenabledflag` as an `hbacrule_mod` parameter; it is maintained with
@@ -234,6 +299,16 @@ This affected user role and group membership too, not just the new classes.
 `checkMemberOperationResult()` now walks the `failed` block and raises a `ConnectorException`,
 except where the requested end state already holds — adding an existing member, removing an
 absent one — because midPoint reissues those routinely and they must stay idempotent.
+
+**That exception is decided structurally, not from FreeIPA's message text.** A refused
+*remove* is always benign: the member is not there, which is the requested outcome. A refused
+*add* is benign only when the member is already present, which `isBenignMemberFailure()`
+establishes by reading the object back — one extra round trip, on the error path only.
+
+An earlier revision matched the English string `"already a member"` instead. FreeIPA
+localises its messages, so that worked only against an English-language server; on any other
+locale a redundant add would have started failing and taken user provisioning with it, since
+`addRemoveMember()` is what assigns every user's groups and roles.
 
 **Behaviour change:** operations that used to report success while doing nothing now fail.
 That is correct, and it is also why the release exposed a configuration problem that had been
@@ -402,30 +477,208 @@ So the upgrade order is:
 > that. The reliable loop is: build → deploy → restart → force a schema refetch → confirm
 > build identity → test.
 
-### Settle the host-naming strategy
+### The host-naming problem, and how it was settled
 
-This is the one blocker to using the release for SSH provisioning, and it is configuration,
-not code.
+This was the one blocker to using the release for SSH provisioning. It was configuration
+rather than code, and it is now resolved — see *The configuration side* below.
 
 Fixing §5.1 exposed that none of the `ar-teleport-*-ssh` rules has a `memberhost_host` or a
 `hostcategory`. The provisioning task writes the VM identifier (`inlg44789`, …), no FreeIPA
 host of that name exists, `hbacrule_add_host` is refused — and `1.2.9.0` answered HTTP 200 and
 reported success. **Those rules grant nothing and never have.** Creating a new rule now fails
-loudly instead, which is correct but not yet functional. Three viable options, all confirmed
-compatible: enrol the VMs under the identifiers the task writes, map identifier to enrolled
-FQDN in the task, or set `hostcategory=all` where a rule is meant to be host-wide. Creating
-with a genuinely enrolled host is verified working.
+loudly instead, which is correct but not yet functional.
+
+What the dev instance actually contains, established by direct probe:
+
+- The task derives the host reference from `vm.getIdentifier()`, giving a bare identifier
+  such as `inlg44789`.
+- **No VM is enrolled in FreeIPA as a host, under any name.** Both `inlg44789` and
+  `inlg44789.lab.inalogy.net` are refused with *"no such entry"*. The only enrolled host is
+  `ipa.lab.inalogy.net`, the IPA server itself.
+- The eight `*-hosts` host groups exist, clearly built to hold these machines, and every one
+  of them is empty.
+- The connector has **no `host` object class**, so midPoint cannot enrol or manage FreeIPA
+  hosts at all. `CLASS_NAMES` covers `user`, `group`, `role`, `hostgroup`, `hbacrule`.
+
+That ruled out mapping the identifier to an enrolled FQDN, which looked like the cheap fix:
+there was no enrolled FQDN to map to.
+
+**Resolved in 1.3.1.0 by adding the `host` object class** (§4.4a), so midPoint provisions the
+host entries itself rather than waiting on infrastructure. The alternative of setting
+`hostcategory=all` was rejected deliberately: it would convert "these users may reach this
+host" into "these users may reach every host", widening access rather than repairing it.
+
+End-to-end verification: a host entry was created for a VM identifier with no DNS record,
+bound to `ar-teleport-iwg-inlg44789-ssh`, and the rule then carried both a user list and a
+host for the first time. The test host was unbound and deleted afterwards, so FreeIPA is back
+to its baseline single host.
+
+### The configuration side, now done
+
+Three pieces were needed to turn the connector capability into working provisioning. All
+three are in the customer project (`Midpoint_groups_test`), not in this repository:
+
+1. **A `host` objectType** on `ABSTRACT_Resource_FreeIPA.xml` — `kind=entitlement`,
+   `intent=host`, focus `ServiceType`, since VM inventory is held as midPoint services.
+   Deliberately no correlation and no synchronization reactions: the host `fqdn` is the VM
+   identifier plus a domain suffix, so no plain attribute equals the VM's own name or
+   identifier, and a guessed correlator would risk binding a host to the wrong service.
+   Discovered hosts therefore stay `UNMATCHED`, which is correct — midPoint provisions hosts
+   but does not adopt pre-existing ones.
+2. **FQDN derivation** in `Provision_FreeIPA_HBACRules.xml`. The task derived the host
+   reference from `vm.getIdentifier()`, giving a bare `inlg44789`. It now qualifies it with a
+   `FREEIPA_HOST_DOMAIN` constant, and treats an identifier that already contains a dot as
+   already qualified so a deliberately FQDN-shaped identifier is not suffixed twice.
+   Qualifying here rather than lengthening the identifier is the point: the identifier also
+   forms part of the rule name, so lengthening it corrupts every rule name.
+3. **Host entries created before the rule references them**, in the same task. This is not
+   optional any more: `hbacrule_add_host` is refused when the host is absent, and since
+   1.3.0.1 that refusal is reported *and* rolls the rule back — so a missing host now yields
+   no rule at all rather than a hostless one.
+
+   The task also binds the host to rules that already exist. `memberhost_host` was only ever
+   set at creation time, so the pre-existing rules would otherwise have stayed hostless
+   forever, since the task skips anything already present. The bind is issued unconditionally
+   and relies on the connector treating an add of an existing member as a successful no-op
+   (§5.1), which makes it idempotent and needs no live read.
+
+Verified end to end: the task created `inlg44789.lab.inalogy.net`,
+`inlg57894.lab.inalogy.net` and `inlg10002.lab.inalogy.net` in FreeIPA from the short VM
+identifiers, then bound each to its rule. Live reads confirm all three
+`ar-teleport-*-ssh` rules now carry both `memberuser_user` and `memberhost_host` — **the
+first time those rules have granted anything.**
+
+One rule is left hostless by design: `ar-teleport-slt-inlg19223-ssh` has no corresponding
+project role, so the task has no VM to derive a host from. It is an orphan from earlier
+testing rather than a defect.
+
+A host entry created this way is a FreeIPA record, not an enrolled machine. It is enough for
+HBAC rules to be structurally valid and to grant access once the machine itself enrols with
+`ipa-client-install`; it does not replace enrolment.
 
 ### Configuration issues found, outside this connector
 
-- The deployed project-role template computes the rule name from `vm.identifier`, not
-  `vm.name`; the repository copy uses `vm.name` and is stale against what runs. A VM named
-  `uni-ipahost` with identifier `ipa.lab.inalogy.net` produced
-  `ar-teleport-uni-ipa.lab.inalogy.net-ssh`.
-- Group correlation matches on `name`, so a role named `MP:type-employee` never correlates
-  with the FreeIPA group `type-employee`. Those groups stay unlinked — which is what made
-  §5.2 reachable. The connector survives it now; the mismatch still means such roles do not
-  manage their groups.
+- **The naming chain is intentional, and the identifier now carries a conflict.** An earlier
+  revision of this document reported the deployed project-role template as stale against its
+  repository copy. That was wrong — they match, and the naming is by design. Traced end to
+  end in `Midpoint_groups_test`:
+
+  | Step | Rule |
+  |---|---|
+  | VirtualMachine template | `vm.name = "${org.extension.shortname}-${vm.identifier}"` |
+  | Project-role template | `role.name = "${vm.name}-${service.name.toLowerCase()}"` |
+  | Project-role template | `role.identifier = "ar-teleport-${role.name}"` |
+  | HBAC provisioning task | rule name ← `role.identifier`; host ← `vm.identifier` |
+
+  So rule and group names come from the **role**, not from the VM fields directly — the VM
+  fields feed role and service creation, exactly as intended. The VirtualMachine template
+  documents the convention itself: *"used in Entra group and FreeIPA HBAC rule naming:
+  ar-teleport-{shortname}-{vmIdentifier}-{service}"*. The observation that produced the
+  original report — a VM whose identifier was set to `ipa.lab.inalogy.net` yielding
+  `ar-teleport-uni-ipa.lab.inalogy.net-ssh` — is the template working correctly on an
+  FQDN-shaped identifier, not a defect.
+
+  The real issue it exposes matters for §4.4a: **`vm.identifier` now serves two purposes that
+  pull apart.** As a name component it wants to be short (`inlg44789`); as the FreeIPA host
+  reference it has to be fully qualified. Setting the identifier to an FQDN to satisfy the
+  second corrupts the naming convention, as that accidental test demonstrated. The FQDN
+  should therefore be **derived in the provisioning task** —
+  `vm.identifier + '.' + domain` — leaving the identifier short. One line in
+  `Provision_FreeIPA_HBACRules.xml`, where `hostname` is currently
+  `basic.stringify(vm?.getIdentifier())?.trim()`.
+- **The `group` correlator does not match what the outbound mapping produces.** Confirmed
+  against the live instance and the repository copy, which agree.
+
+  The group's name is set by a **strong** mapping in `MP:freeIpa-group-metarole`, sourced
+  from the role's `identifier`. The resource-level outbound from `name` is weak and loses.
+  So role `MP:type-employee` (identifier `type-employee`) correctly produces the FreeIPA
+  group `type-employee`. But the `group` objectType correlates the focus `name` against
+  `$projection/attributes/icfs:name` — it looks for a role *named* `type-employee`, and the
+  role is named `MP:type-employee`. No match.
+
+  The `group` correlator has been changed to `identifier`, matching what its own construction
+  produces and matching what the `hbacrule` objectType already does correctly. **That change
+  is correct but not sufficient**, and the reason is the more important finding.
+
+  **The real blocker is classification, not correlation.** There are two objectTypes for
+  `ri:group`, and the design is deliberate:
+
+  | objectType | focus | name produced from | targeted by |
+  |---|---|---|---|
+  | `group` | `RoleType` | `role.identifier` | `MP:freeIpa-group-metarole` (`intent=group`) |
+  | `org-group` | `OrgType` | org `name` / `orgKey` | `MP:FreeIpa-org-group-metarole` (`intent=org-group`) |
+
+  Each metarole names its intent explicitly, so **provisioning** routes correctly. But both
+  objectTypes delineate on nothing more than `<objectClass>ri:group</objectClass>`, with no
+  distinguishing filter and neither marked `default`. So when reconciliation **discovers** a
+  group it cannot tell which objectType applies and takes the first — `org-group`.
+
+  Verified: all 25 group shadows carry `intent=org-group`. Not one is `intent=group`. The
+  `group` objectType is unreachable for discovered objects, which is why correcting its
+  correlator changed nothing on its own — reconciliation confirmed the three `type-*` groups
+  still `UNMATCHED` afterwards.
+
+  So a role-owned group that already exists in FreeIPA is classified into an **Org-focused**
+  objectType, and can never correlate to its Role regardless of the correlator path. The 15
+  `LINKED` groups are all org-owned and linked because midPoint provisioned them; the three
+  `type-*` groups pre-existed, were discovered, and are stranded.
+
+  Symptoms, both reproduced: the three `type-*` groups sit permanently `UNMATCHED`, and
+  `recompute` on their roles fails with **HTTP 409 AlreadyExistsException** — midPoint tries
+  to create a group that already exists but which it cannot adopt.
+
+  **Fixed** by delineation filters on both `ri:group` objectTypes, so exactly one matches any
+  given group and classification no longer depends on document order:
+
+  ```xml
+  <!-- group -->
+  <filter><q:text>attributes/icfs:name startsWith "type-"</q:text></filter>
+  <!-- org-group -->
+  <filter><q:text>not (attributes/icfs:name startsWith "type-")</q:text></filter>
+  ```
+
+  Filtering both sides rather than only `group` is deliberate: leaving `org-group` unfiltered
+  would keep it matching everything, so a `type-*` group would still satisfy both types.
+
+  The `type-` convention is safe here rather than merely convenient — `MP:freeIpa-group-metarole`
+  has exactly three consumers (`MP:type-employee`, `MP:type-contractor`, `MP:type-part-timer`)
+  and all three carry a `type-*` identifier. A fourth role-owned group outside that convention
+  would need the filter widened, which the inline comment in the resource records.
+
+  **A delineation change alone does not repair existing shadows.** A shadow's kind and intent
+  are recorded when it is created and are sticky: reconciliation matched the three `type-*`
+  groups by primary identifier, reused the existing shadows, and left them on `org-group`.
+  Verified — the first reconciliation after the filter change reported success and changed
+  nothing. The repair was to delete those three shadows from the repository with
+  `ModelExecuteOptions.create().raw()`, which leaves the FreeIPA groups untouched, and let
+  reconciliation re-discover them. Nothing referenced the three shadows, checked first.
+
+  Result, verified end to end:
+
+  | | before | after |
+  |---|---|---|
+  | `type-*` groups | `intent=org-group`, `UNMATCHED` | **`intent=group`, `LINKED`** |
+  | `recompute` on the three roles | HTTP 409 AlreadyExistsException | **succeeds** |
+  | org-owned groups | 15 `LINKED` | 15 `LINKED`, untouched |
+  | FreeIPA built-ins | `UNMATCHED` | `UNMATCHED` — correct, midPoint does not own them |
+
+  Group shadow count is unchanged at 25, and all five reconciliations pass afterwards
+  (account 12, group 27, role 10, hostgroup 11, hbacrule 9).
+
+  Correlator status across the resource, for completeness:
+
+  | objectType | name produced from | correlates on | verdict |
+  |---|---|---|---|
+  | `hbacrule` | `role.identifier` | `identifier` | correct |
+  | `role` | `role.name` (weak, resource-level) | `name` | correct |
+  | `group` | `role.identifier` (strong, metarole) | `identifier` (fixed) | correct |
+  | `org-group` | org `name` / `orgKey` | `name` with `polyStringNorm` | correct — now receives only org-owned groups and built-ins |
+  | `hostgroup`, `org-hostgroup` | `orgKey + "-hosts"` | `name` | latent — textually cannot match; currently masked because midPoint provisioned every one of them |
+
+  An earlier revision of this document claimed this mismatch was what made §5.2 reachable.
+  That was overstated: §5.2 fires when a group named in `memberof_group` is absent from
+  FreeIPA, which is a different condition from a group that exists but is unlinked. The two
+  are independent defects and the §5.2 fix stands on its own.
 - Unassigning `APP:freeipa-personal-account` does **not** deprovision: the Employee archetype
   still induces the account. Disabling or deleting the focus does. Easy to mistake for a
   connector fault.
@@ -440,7 +693,11 @@ with a genuinely enrolled host is verified working.
 - The `1.2.9.0` reference tree — `.gitignore`d, kept on disk for provenance only.
 - Resource switch XMLs used for version testing — they carry a live instance's encrypted
   password cipher and are `.gitignore`d. Regenerate them from the live object instead.
-- Three midPoint objects that exist on the dev instance but have never had a file:
-  `[PROVISION] FreeIPA HBAC Rules`, `[PROVISION] FreeIPA Project Group Memberships`, and
-  `[RECON] FreeIPA:OrgHostGroup`. The first is the only consumer of the HBAC feature this
-  release exists to fix; capturing it is worth doing separately.
+- The midPoint deployment configuration, including the tasks that consume these features.
+  An earlier revision of this document claimed three live objects had never had a file; that
+  was wrong. `[PROVISION] FreeIPA HBAC Rules`, `[PROVISION] FreeIPA Project Group
+  Memberships` and `[RECON] FreeIPA:OrgHostGroup` are all versioned in the
+  `Midpoint_groups_test` project as `tasks/provision/Provision_FreeIPA_HBACRules.xml`,
+  `tasks/provision/Provision_FreeIPA_ProjectGroupMemberships.xml` and
+  `tasks/reconciliation/Recon_FreeIPA_OrgHostGroup.xml`. That is the right place for them —
+  they are deployment configuration, not connector code — so nothing needs importing here.

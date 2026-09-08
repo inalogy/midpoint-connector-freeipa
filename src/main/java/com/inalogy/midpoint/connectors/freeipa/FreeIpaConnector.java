@@ -91,17 +91,18 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	public static final String OBJECT_CLASS_ROLE = "role";
 	public static final String OBJECT_CLASS_HOSTGROUP = "hostgroup";
 	public static final String OBJECT_CLASS_HBACRULE = "hbacrule";
+	public static final String OBJECT_CLASS_HOST = "host";
 
 	private static final String[] CLASS_NAMES = {OBJECT_CLASS_USER, OBJECT_CLASS_GROUP, OBJECT_CLASS_ROLE,
-			OBJECT_CLASS_HOSTGROUP, OBJECT_CLASS_HBACRULE};
+			OBJECT_CLASS_HOSTGROUP, OBJECT_CLASS_HBACRULE, OBJECT_CLASS_HOST};
 
 	/**
-	 * Object classes whose schema FreeIPA reports, but reports wrongly: the declared types
-	 * and cardinalities do not match what the JSON-RPC layer actually returns. For these,
-	 * introspection is skipped entirely and buildStaticObjectClass() is the whole schema.
-	 * See the comment in buildObjectClass() for what specifically breaks.
+	 * Object classes where FreeIPA's introspected schema declares types that do not match
+	 * what the JSON-RPC layer actually sends. Their attributes are still enumerated from
+	 * introspection - only the declared type is ignored, leaving them untyped. See the
+	 * comment in buildObjectClass() for what specifically breaks.
 	 */
-	private static final List<String> STATIC_SCHEMA_CLASSES = Arrays.asList(OBJECT_CLASS_HOSTGROUP, OBJECT_CLASS_HBACRULE);
+	private static final List<String> UNTRUSTED_TYPE_CLASSES = Arrays.asList(OBJECT_CLASS_HOSTGROUP, OBJECT_CLASS_HBACRULE);
 
 	public static final String ATTR_CN = "cn";
 	public static final String ATTR_UID = "uid";
@@ -138,6 +139,16 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	public static final String ATTR_NOPRIVATE = "noprivate";
 	public static final String ATTR_GIDNUMBER = "gidnumber";
 
+	// host
+	/** Primary key of the host object class - hosts are keyed on fqdn, not cn. */
+	public static final String ATTR_FQDN = "fqdn";
+	/**
+	 * host_add refuses a name with no DNS A record unless force is set. Host entries here are
+	 * provisioned from VM inventory, where DNS frequently lags or does not exist at all, so
+	 * the option is always sent. FreeIPA still requires a fully-qualified name.
+	 */
+	public static final String ATTR_FORCE = "force";
+
 	// hostgroup / hbacrule
 	public static final String ATTR_MEMBERHOST_HOST = "memberhost_host";
 	public static final String ATTR_MEMBERUSER_USER = "memberuser_user";
@@ -165,7 +176,18 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	 * multi-valued explicitly in buildStaticObjectClass().
 	 */
 	private static final List<String> MEMBERSHIP_PREFIXES = Arrays.asList(
-			"memberof_", "member_", "memberindirect_", "memberofindirect_", "membermanager_");
+			// subject-side projections, present on user / group / role
+			"memberof_", "member_", "memberindirect_", "memberofindirect_", "membermanager_",
+			// object-side lists, present on hostgroup / hbacrule. FreeIPA reports several of
+			// these as single-valued even though every one of them is a list, so covering
+			// them by prefix fixes the cardinality for any FreeIPA version rather than
+			// relying on a hand-maintained per-attribute list.
+			"memberuser_", "memberhost_", "memberservice_", "sourcehost_",
+			// host: managedby_host is a multi-valued list maintained with
+			// host_add_managedby / host_remove_managedby, never through host_mod. Treating it
+			// as a membership projection makes it multi-valued, optional, and skipped on
+			// write - sending it to host_mod would draw FreeIPA error 3005, unknown option.
+			"managedby_");
 
 	private static boolean isMembershipAttribute(String attributeName) {
 		if (attributeName == null) {
@@ -323,24 +345,29 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		// definition takes precedence over our static fallback.
 		Set<String> declaredAttrs = new HashSet<>();
 
-		// FreeIPA DOES report hostgroup and hbacrule in its introspected schema, but its
-		// declarations do not match what the JSON-RPC layer actually returns: ipaenabledflag
-		// is declared type "bool" while hbacrule_show answers with the string "TRUE", so
-		// declaring it Boolean makes midPoint reject every rule with
-		//   "The value 'PPV(String:true)' does not conform to the definition ... boolean"
-		// and takes down HBAC reconciliation entirely. FreeIPA also reports the
-		// memberuser_* / memberhost_* / memberservice_* lists as single-valued.
+		// Every object class is enumerated from FreeIPA's own introspected schema, because
+		// only FreeIPA knows what a given deployment returns - version, installed plugins and
+		// local schema extensions all change the attribute set. Hand-maintaining the list
+		// instead risks omitting an attribute that some deployment does return, and an
+		// attribute midPoint has no definition for makes it recurse until it throws
+		// StackOverflowError rather than reporting a clear error (see the note in
+		// convertKeyedToConnectorObject).
 		//
-		// This is why 1.2.9.0 bypassed introspection for these two classes, and we keep that
-		// behaviour: for them the static declaration below is the whole schema, not a
-		// supplement. Introspection hardening still applies to user/group/role.
-		boolean useIntrospection = !STATIC_SCHEMA_CLASSES.contains(className);
+		// What cannot be trusted is FreeIPA's *typing* for hostgroup and hbacrule: it declares
+		// ipaenabledflag as "bool" while hbacrule_show answers with the string "TRUE", so
+		// honouring that type makes midPoint reject every rule with
+		//   "The value 'PPV(String:true)' does not conform to the definition ... boolean"
+		// and takes down HBAC reconciliation entirely. For those classes the declared type is
+		// therefore ignored and every attribute is left untyped (xsd:string), which matches
+		// what the JSON-RPC layer really sends. Cardinality is handled separately, by prefix,
+		// in isMembershipAttribute().
+		boolean distrustDeclaredTypes = UNTRUSTED_TYPE_CLASSES.contains(className);
 		JSONArray classes = FreeIpaConnector.schema.getJSONObject("result").getJSONObject("result").getJSONArray("classes");
 		boolean ipaNtHomeDirectoryAlreadyFound = false;
 		for (int i = 0; i < classes.length(); ++i) {
 		    JSONObject jsonClass = classes.getJSONObject(i);
 		    String jsonClassName = jsonClass.getString("name");
-		    if (useIntrospection && jsonClassName.equals(className)) {
+		    if (jsonClassName.equals(className)) {
 		    	JSONArray jsonParams = jsonClass.getJSONArray("params");
 		    	for (int p = 0; p < jsonParams.length(); ++p) {
 		    		JSONObject jsonParam = jsonParams.getJSONObject(p);
@@ -370,24 +397,21 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		    			continue;
 		    		}
 		    		AttributeInfoBuilder attrBuilder = new AttributeInfoBuilder(attributeName);
-		    		if ("bool".equals(type))
+		    		if ("bool".equals(type) && !distrustDeclaredTypes)
 		    			attrBuilder.setType(Boolean.class);
 	//		    		else if ("int".equals(type)) // uidnumber, gidnumber problem
 	//		    			attrBuilder.setType(Integer.class);
 
 		    		if (required)
 		    			attrBuilder.setRequired(true);
-		    		// Schema fix: FreeIPA's introspected schema reports memberof_* / member_*
-		    		// attributes as single-valued, but they're inherently multi-valued (a user
-		    		// can belong to many groups/roles/sudorules/hbacrules; a group can have many
-		    		// members). Covers extended schema (sudorule, hbacrule, hostgroup, …) without
-		    		// needing to enumerate each one.
-		    		boolean isMemberAttr = attributeName.startsWith("memberof_")
-		    				|| attributeName.startsWith("member_")
-                            || attributeName.startsWith("memberindirect_")
-                            || attributeName.startsWith("memberofindirect_")
-                            || attributeName.startsWith("membermanager_");
-		    		if (multivalue || isMemberAttr)
+		    		// Schema fix: FreeIPA's introspected schema reports membership attributes as
+		    		// single-valued, but every one of them is a list - a user belongs to many
+		    		// groups/roles/sudorules/hbacrules, an HBAC rule has many member users and
+		    		// hosts. Decided by prefix in isMembershipAttribute(), which is the single
+		    		// source of truth for this: the same predicate also drives the required-flag
+		    		// correction above and the write-skipping in createKeyed(), so a prefix added
+		    		// there takes effect everywhere rather than in one of three places.
+		    		if (multivalue || isMembershipAttribute(attributeName))
 		    			attrBuilder.setMultiValued(true);
 
 		            objClassBuilder.addAttributeInfo(attrBuilder.build());
@@ -469,12 +493,41 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	        objClassBuilder.addAttributeInfo(attrIpaNtSecurityIdentifierAuthBuilder.build());
 		}
 
-		if (OBJECT_CLASS_GROUP.equals(className) || OBJECT_CLASS_ROLE.equals(className)) {
+		if (OBJECT_CLASS_GROUP.equals(className) || OBJECT_CLASS_ROLE.equals(className)
+				|| OBJECT_CLASS_HOST.equals(className)) {
 			// FreeIPA returns dn for every object it hands back, but its introspected schema
 			// declares it only for user - so group_show and role_show deliver an attribute
 			// midPoint has no definition for, which surfaces as a reconciliation
 			// partial_error rather than a clear message about dn.
 			addStaticAttr(objClassBuilder, declaredAttrs, ATTR_DN, false);
+		}
+
+		if (OBJECT_CLASS_HOST.equals(className)) {
+			// host keeps FreeIPA's introspected schema, unlike hostgroup and hbacrule: its
+			// attribute set is large and installation-dependent, so hand-enumerating it would
+			// risk omitting something host_show returns - and an attribute absent from the
+			// schema makes midPoint recurse infinitely rather than error (see §4.3 of
+			// CHANGES.md). Introspection declares whatever FreeIPA returns, which is exactly
+			// the property needed here.
+			//
+			// These are declared anyway because host_show is known to return them while
+			// introspection does not reliably describe them. addStaticAttr defers to
+			// FreeIPA's own definition when there is one, so this only fills gaps.
+			addStaticAttr(objClassBuilder, declaredAttrs, ATTR_IPAUNIQUEID, false);
+			addStaticAttr(objClassBuilder, declaredAttrs, "serverhostname", false);
+			addStaticAttr(objClassBuilder, declaredAttrs, "krbcanonicalname", false);
+			addStaticAttr(objClassBuilder, declaredAttrs, "krbprincipalname", true);
+			addStaticAttr(objClassBuilder, declaredAttrs, "sshpubkeyfp", true);
+			addStaticAttr(objClassBuilder, declaredAttrs, "managedby_host", true);
+
+			// Verified missing from FreeIPA's introspected host schema on 4.12.2, while
+			// host_show returns all four. The three Kerberos ones are the same attributes
+			// upstream already hand-declares for user, so the omission is consistent across
+			// object classes rather than specific to host.
+			addStaticAttr(objClassBuilder, declaredAttrs, ATTR_CN, false);
+			addStaticAttr(objClassBuilder, declaredAttrs, ATTR_KRBEXTRADATA, false);
+			addStaticAttr(objClassBuilder, declaredAttrs, ATTR_KRBLASTPWDCHANGE, false);
+			addStaticAttr(objClassBuilder, declaredAttrs, ATTR_KRBPWDPOLICYREFERENCE, false);
 		}
 
 		if (OBJECT_CLASS_ROLE.equals(className)) {
@@ -487,7 +540,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 			addStaticAttr(objClassBuilder, declaredAttrs, "memberof_privilege", true);
 		}
 
-		if (STATIC_SCHEMA_CLASSES.contains(className)) {
+		if (UNTRUSTED_TYPE_CLASSES.contains(className)) {
 			buildStaticObjectClass(objClassBuilder, className, declaredAttrs);
 		}
 
@@ -495,13 +548,16 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	}
 
 	/**
-	 * Declares the complete attribute set for hostgroup and hbacrule. Introspection is
-	 * skipped for these two, so this is authoritative rather than a supplement - notably
-	 * every attribute here is untyped (xsd:string), matching what FreeIPA's JSON-RPC layer
-	 * really returns, and the membership lists are explicitly multi-valued.
+	 * Safety net for hostgroup and hbacrule: declares the attributes their *_show commands
+	 * are known to return, for the case where a deployment's introspected schema does not
+	 * describe them. Introspection runs first and wins, so on a FreeIPA that reports these
+	 * classes properly this method declares nothing at all.
 	 *
-	 * Attribute names and shapes were taken from live hostgroup_show / hbacrule_show
-	 * responses on FreeIPA 4.12.2.
+	 * It exists because an attribute midPoint has no definition for is not a soft failure -
+	 * midPoint recurses until it throws StackOverflowError. Names were taken from live
+	 * hostgroup_show / hbacrule_show responses on FreeIPA 4.12.2; a deployment that returns
+	 * something outside both this list and its own introspected schema would still need it
+	 * adding here.
 	 */
 	private void buildStaticObjectClass(ObjectClassInfoBuilder objClassBuilder, String className, Set<String> declaredAttrs) {
 		LOG.ok("Applying static schema supplement for object class {0}", className);
@@ -515,7 +571,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 		if (OBJECT_CLASS_HOSTGROUP.equals(className)) {
 			// NOTE: mepmanagedentry is deliberately NOT declared here, and is filtered out
-			// in convertCnKeyedToConnectorObject(). See the comment there before adding it.
+			// in convertKeyedToConnectorObject(). See the comment there before adding it.
 			for (String attr : new String[] {
 					"memberhost", ATTR_MEMBER_HOST, "member_hostgroup",
 					"memberindirect_host", "memberindirect_hostgroup",
@@ -715,7 +771,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 					} else {
 						reason = String.valueOf(entry);
 					}
-					if (isBenignMemberFailure(command, reason)) {
+					if (isBenignMemberFailure(command, reason, type, value, target)) {
 						LOG.ok("Ignoring idempotent result of {0} for {1} ''{2}'' on ''{3}'': {4}",
 								command, type, value, target, reason);
 					} else {
@@ -731,15 +787,73 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		}
 	}
 
-	private boolean isBenignMemberFailure(String command, String reason) {
-		if (reason == null) {
-			return false;
-		}
+	/**
+	 * True when FreeIPA's refusal means the requested end state already holds, which midPoint
+	 * must see as success because it reissues the same delta routinely.
+	 *
+	 * Both arms are decided structurally rather than by matching FreeIPA's message text.
+	 * FreeIPA localises those messages, so a text match would work only against an
+	 * English-language server: on any other locale a redundant add would start failing and
+	 * take user provisioning with it.
+	 *
+	 * A remove that FreeIPA refuses is always benign - the member is not there, which is the
+	 * requested outcome. An add is benign only when the member is already present, which is
+	 * checked by reading the object back. That read costs a round trip, but only on the error
+	 * path, and only for the one case where the answer matters.
+	 */
+	private boolean isBenignMemberFailure(String command, String reason, String param,
+			String value, String target) {
 		if (command.contains("_remove_")) {
-			// Member already absent - the requested end state is satisfied either way.
 			return true;
 		}
-		return reason.toLowerCase(Locale.ROOT).contains("already a member");
+		if (value == null) {
+			return false;
+		}
+
+		String[] binding = membershipBindingForCommand(command, param);
+		if (binding == null) {
+			// Nothing to read the current value back from; treat as a real failure rather
+			// than guessing.
+			LOG.warn("Cannot verify whether ''{0}'' is already a member of ''{1}'': no read "
+					+ "binding for {2}/{3}. Reporting the refusal: {4}",
+					value, target, command, param, reason);
+			return false;
+		}
+
+		try {
+			boolean present = readCurrentMembers(binding[0], binding[4], target).contains(value);
+			if (present) {
+				LOG.ok("{0} refused for ''{1}'' on ''{2}'' but it is already a member; treating as a no-op",
+						command, value, target);
+			}
+			return present;
+		} catch (RuntimeException e) {
+			LOG.warn("Could not verify membership of ''{0}'' on ''{1}'' after {2} was refused: {3}",
+					value, target, command, e.getMessage());
+			return false;
+		}
+	}
+
+	/**
+	 * Reverse lookup of membershipBinding() from the command and request parameter a failure
+	 * came back on, so the current value can be read for the idempotency check above.
+	 */
+	private static String[] membershipBindingForCommand(String command, String param) {
+		if (command == null || param == null) {
+			return null;
+		}
+		for (String objectClassName : new String[] { OBJECT_CLASS_HOSTGROUP, OBJECT_CLASS_HBACRULE }) {
+			for (String attributeName : new String[] {
+					ATTR_MEMBER_HOST, "member_hostgroup", ATTR_MEMBERUSER_USER, "memberuser_group",
+					ATTR_MEMBERHOST_HOST, "memberhost_hostgroup",
+					"memberservice_hbacsvc", "memberservice_hbacsvcgroup" }) {
+				String[] binding = membershipBinding(objectClassName, attributeName);
+				if (binding != null && command.equals(binding[1]) && param.equals(binding[3])) {
+					return binding;
+				}
+			}
+		}
+		return null;
 	}
 
 	@Override
@@ -909,6 +1023,24 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 					}
                 }
             }
+            else if (objectClass.is(OBJECT_CLASS_HOST)) {
+                //find by fully-qualified host name (fqdn)
+                if (lookupKey != null) {
+                	JSONObject host = showOrNull("host_show", lookupKey);
+                	if (host != null) {
+                		handler.handle(convertHostToConnectorObject(host));
+                	}
+                } else {
+                	JSONObject hosts = callRequest(getIpaRequest("host_find", new JSONObject().put("all", true), new JSONArray()));
+                	JSONArray results = hosts.getJSONObject("result").getJSONArray("result");
+            		for (int i = 0; i < results.length(); ++i) {
+                        handler.handle(convertHostToConnectorObject(results.getJSONObject(i)));
+            		}
+					if (results.length() == getConfiguration().getSizelimit()){
+						LOG.warn("Sizelimit reached when searching all hosts, please increase it over resource config...");
+					}
+                }
+            }
             else {
                 // not found
                 throw new UnsupportedOperationException("Unsupported object class " + objectClass);
@@ -1061,17 +1193,22 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         return connectorObject;
 	}
 
+	/** The attribute FreeIPA keys an object class on: fqdn for host, cn for the rest. */
+	private static String primaryKeyAttr(String objectClassName) {
+		return OBJECT_CLASS_HOST.equals(objectClassName) ? ATTR_FQDN : ATTR_CN;
+	}
+
 	/**
-	 * Converter for the cn-keyed object classes whose values are plain strings or string
-	 * arrays (hostgroup, hbacrule). Uses String.valueOf rather than JSONArray.getString so a
+	 * Converter for the object classes whose values are plain strings or string arrays
+	 * (hostgroup, hbacrule, host). Uses String.valueOf rather than JSONArray.getString so a
 	 * numeric or boolean element degrades to its text form instead of throwing and costing
 	 * us the whole object.
 	 */
-	private ConnectorObject convertCnKeyedToConnectorObject(JSONObject source, String objectClassName) {
+	private ConnectorObject convertKeyedToConnectorObject(JSONObject source, String objectClassName) {
 		LOG.ok("JSON {0} as input: \n{1}", objectClassName, source);
 		ConnectorObjectBuilder builder = new ConnectorObjectBuilder();
 		builder.setObjectClass(new ObjectClass(objectClassName));
-		String uid = getMultiAsSingleValue(source, ATTR_CN);
+		String uid = getMultiAsSingleValue(source, primaryKeyAttr(objectClassName));
 		builder.setUid(new Uid(uid));
 		builder.setName(new Name(uid));
 
@@ -1126,16 +1263,20 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		}
 
 		ConnectorObject connectorObject = builder.build();
-		LOG.ok("convertCnKeyedToConnectorObject, {0}: {1}, \n\tconnectorObject: {2}", objectClassName, uid, connectorObject);
+		LOG.ok("convertKeyedToConnectorObject, {0}: {1}, \n\tconnectorObject: {2}", objectClassName, uid, connectorObject);
 		return connectorObject;
 	}
 
 	private ConnectorObject convertHostgroupToConnectorObject(JSONObject hostgroup) {
-		return convertCnKeyedToConnectorObject(hostgroup, OBJECT_CLASS_HOSTGROUP);
+		return convertKeyedToConnectorObject(hostgroup, OBJECT_CLASS_HOSTGROUP);
 	}
 
 	private ConnectorObject convertHbacruleToConnectorObject(JSONObject hbacrule) {
-		return convertCnKeyedToConnectorObject(hbacrule, OBJECT_CLASS_HBACRULE);
+		return convertKeyedToConnectorObject(hbacrule, OBJECT_CLASS_HBACRULE);
+	}
+
+	private ConnectorObject convertHostToConnectorObject(JSONObject host) {
+		return convertKeyedToConnectorObject(host, OBJECT_CLASS_HOST);
 	}
 
 	private String getMultiAsSingleValue(JSONObject user, String attrName) {
@@ -1167,6 +1308,8 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             return createHostgroup(attributes);
 		} else if (objectClass.is(OBJECT_CLASS_HBACRULE)) {
             return createHbacrule(attributes);
+		} else if (objectClass.is(OBJECT_CLASS_HOST)) {
+            return createHost(attributes);
         } else {
             // not found
             throw new UnsupportedOperationException("Unsupported object class " + objectClass);
@@ -1314,6 +1457,8 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 			return updateDeltaHostgroup(uid, modifications);
 		} else if (objectClass.is(OBJECT_CLASS_HBACRULE)) {
 			return updateDeltaHbacrule(uid, modifications);
+		} else if (objectClass.is(OBJECT_CLASS_HOST)) {
+			return updateDeltaHost(uid, modifications);
 		} else {
 			// not found
 			throw new UnsupportedOperationException("Unsupported object class " + objectClass);
@@ -1775,7 +1920,12 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 	/** Attributes FreeIPA computes or derives; never send them back on create or update. */
 	private static final List<String> WRITE_IGNORED_ATTRS = Arrays.asList(
-			ATTR_DN, ATTR_IPAUNIQUEID, ATTR_OBJECTCLASS, ATTR_MEPMANAGEDENTRY, ATTR_CN);
+			ATTR_DN, ATTR_IPAUNIQUEID, ATTR_OBJECTCLASS, ATTR_MEPMANAGEDENTRY, ATTR_CN,
+			// host: the fqdn is the primary key and is passed positionally, never as a
+			// parameter. The rest are derived from the Kerberos principal and the enrolled
+			// key material, and host_mod rejects them.
+			ATTR_FQDN, "krbprincipalname", "krbcanonicalname", "has_keytab", "has_password",
+			"sshpubkeyfp", "serverhostname", "ipacertmapdata");
 
 	/**
 	 * Membership attribute -> the FreeIPA commands and parameter name that maintain it.
@@ -1916,14 +2066,18 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	}
 
 	private Uid createHostgroup(Set<Attribute> attributes) {
-		return createCnKeyed(attributes, OBJECT_CLASS_HOSTGROUP, "hostgroup_add");
+		return createKeyed(attributes, OBJECT_CLASS_HOSTGROUP, "hostgroup_add");
 	}
 
 	private Uid createHbacrule(Set<Attribute> attributes) {
-		return createCnKeyed(attributes, OBJECT_CLASS_HBACRULE, "hbacrule_add");
+		return createKeyed(attributes, OBJECT_CLASS_HBACRULE, "hbacrule_add");
 	}
 
-	private Uid createCnKeyed(Set<Attribute> attributes, String objectClassName, String addCommand) {
+	private Uid createHost(Set<Attribute> attributes) {
+		return createKeyed(attributes, OBJECT_CLASS_HOST, "host_add");
+	}
+
+	private Uid createKeyed(Set<Attribute> attributes, String objectClassName, String addCommand) {
 		LOG.ok("create {0}, attributes: {1}", objectClassName, attributes);
 
 		String icfsName = getStringAttr(attributes, Name.NAME);
@@ -1958,6 +2112,13 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 				continue; // nothing to set on create
 			}
 			params.put(attrName, attrValue.get(0));
+		}
+
+		if (OBJECT_CLASS_HOST.equals(objectClassName)) {
+			// Without this, host_add refuses any name that has no DNS A record - which is the
+			// normal case when host entries are provisioned ahead of, or independently of,
+			// DNS. FreeIPA still requires the name to be fully qualified.
+			params.put(ATTR_FORCE, true);
 		}
 
 		JSONArray params_array = new JSONArray();
@@ -2002,7 +2163,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	 * about to rethrow the real cause and that must not be masked.
 	 */
 	private void rollbackCreate(String objectClassName, String name, RuntimeException cause) {
-		String delCommand = OBJECT_CLASS_HBACRULE.equals(objectClassName) ? "hbacrule_del" : "hostgroup_del";
+		String delCommand = objectClassName + "_del";
 		LOG.warn("Rolling back {0} ''{1}'': {2}", objectClassName, name, cause.getMessage());
 		try {
 			callRequest(getIpaRequest(delCommand, new JSONObject(), new JSONArray().put(name)));
@@ -2015,11 +2176,15 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	}
 
 	private Set<AttributeDelta> updateDeltaHostgroup(Uid uid, Set<AttributeDelta> modifications) {
-		return updateDeltaCnKeyed(uid, modifications, OBJECT_CLASS_HOSTGROUP, "hostgroup_mod");
+		return updateDeltaKeyed(uid, modifications, OBJECT_CLASS_HOSTGROUP, "hostgroup_mod");
 	}
 
 	private Set<AttributeDelta> updateDeltaHbacrule(Uid uid, Set<AttributeDelta> modifications) {
-		return updateDeltaCnKeyed(uid, modifications, OBJECT_CLASS_HBACRULE, "hbacrule_mod");
+		return updateDeltaKeyed(uid, modifications, OBJECT_CLASS_HBACRULE, "hbacrule_mod");
+	}
+
+	private Set<AttributeDelta> updateDeltaHost(Uid uid, Set<AttributeDelta> modifications) {
+		return updateDeltaKeyed(uid, modifications, OBJECT_CLASS_HOST, "host_mod");
 	}
 
 	/**
@@ -2028,7 +2193,7 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	 * returning null would leave midPoint holding the old one, marking the shadow dead and
 	 * letting the next reconciliation create a duplicate.
 	 */
-	private Set<AttributeDelta> updateDeltaCnKeyed(Uid uid, Set<AttributeDelta> modifications, String objectClassName, String modCommand) {
+	private Set<AttributeDelta> updateDeltaKeyed(Uid uid, Set<AttributeDelta> modifications, String objectClassName, String modCommand) {
 		LOG.ok("updateDelta{0}, Uid: {1}, deltas: {2}", objectClassName, uid, modifications);
 
 		if (modifications == null || modifications.isEmpty()) {
@@ -2087,6 +2252,15 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 		}
 
 		if (newName != null && !target.equals(newName)) {
+			if (OBJECT_CLASS_HOST.equals(objectClassName)) {
+				// host_mod has no rename option: in FreeIPA a host's fqdn is fixed for the
+				// life of the entry, because the Kerberos principal and any issued
+				// certificates are derived from it. Sending rename would draw error 3005,
+				// unknown option; failing here says why instead.
+				throw new ConnectorException("FreeIPA cannot rename host '" + target
+						+ "': a host's fqdn is immutable. Delete the host and create '"
+						+ newName + "' instead.");
+			}
 			params.put(ATTR_RENAME, newName);
 			LOG.ok("Renaming {0} from {1} to {2}", objectClassName, target, newName);
 		}
@@ -2311,6 +2485,13 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
     		JSONObject request = getIpaRequest("hbacrule_del", new JSONObject(), params_array);
     		JSONObject jores = callRequest(request);
             LOG.info("response body: {0} for hbacrule deletion for uid: {1}", jores, uid);
+		} else if (objectClass.is(OBJECT_CLASS_HOST)) {
+            LOG.ok("delete host, Uid: {0}", uid);
+            JSONArray params_array = new JSONArray();
+            params_array.put(uid.getUidValue());
+    		JSONObject request = getIpaRequest("host_del", new JSONObject(), params_array);
+    		JSONObject jores = callRequest(request);
+            LOG.info("response body: {0} for host deletion for uid: {1}", jores, uid);
         } else {
             // not found
             throw new UnsupportedOperationException("Unsupported object class " + objectClass);

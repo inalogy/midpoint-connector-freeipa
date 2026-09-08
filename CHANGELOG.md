@@ -2,6 +2,70 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1.0] - 2026-09-08
+
+### Changed — portability
+Two decisions had been made against a single FreeIPA 4.12.2 lab and would not have held
+elsewhere. Both are now deployment-independent.
+
+- **`hostgroup` and `hbacrule` attributes are enumerated from FreeIPA's introspected schema
+  again**, instead of from a hand-written list. Only the declared *type* is ignored for those
+  two classes (`UNTRUSTED_TYPE_CLASSES`), which is the part FreeIPA gets wrong; the attribute
+  set comes from the server. A hand-maintained list is correct only for the FreeIPA it was
+  written against — any deployment returning an attribute outside it would have hit the
+  `StackOverflowError` described under `mepmanagedentry`. `buildStaticObjectClass()` remains
+  as an additive safety net for a deployment whose schema omits these classes.
+- **Membership cardinality is decided by prefix in `isMembershipAttribute()`**, now the single
+  source of truth. The multi-value widening had its own inline copy of the prefix list, so
+  the `memberuser_*` / `memberhost_*` / `memberservice_*` / `sourcehost_*` lists stayed
+  single-valued no matter what the other list said. Those prefixes are covered, so the
+  correction applies to any FreeIPA version rather than to enumerated attribute names.
+- **A refused membership add is judged by reading the object back, not by matching FreeIPA's
+  message text.** The previous check matched the English string `"already a member"`; FreeIPA
+  localises its messages, so on a non-English server a redundant add would have failed and
+  taken user provisioning with it.
+
+### Added
+- **`host` object class.** FreeIPA host entries are now a managed object class, keyed on
+  `fqdn` rather than `cn`. Search (`host_find` / `host_show`), create (`host_add`), update
+  (`host_mod`) and delete (`host_del`) are all wired.
+
+  This closes the gap that made HBAC host membership unusable: nothing was enrolled in
+  FreeIPA under the identifiers the provisioning task writes, and the connector had no way
+  to create host entries. midPoint can now provision them from VM inventory, after which
+  `hbacrule_add_host` succeeds and the rules grant real access.
+
+  Details worth knowing:
+  - `host_add` always sends `force=true`. Without it FreeIPA refuses any name that has no
+    DNS A record, which is the normal case when host entries are provisioned ahead of, or
+    independently of, DNS. FreeIPA still requires a fully-qualified name, so the resource
+    must map `icfs:name` to an FQDN, not to a bare VM identifier.
+  - `host` keeps FreeIPA's introspected schema rather than the static treatment used for
+    `hostgroup` and `hbacrule`. Verified on 4.12.2: the three boolean host attributes
+    (`ipakrbokasdelegate`, `ipakrboktoauthasdelegate`, `ipakrbrequirespreauth`) are returned
+    as real JSON booleans matching their declared type, so `host` does not have the
+    `ipaenabledflag` inconsistency. Its attribute set is also large and
+    installation-dependent, which makes hand-enumeration the riskier option.
+  - `cn`, `krbextradata`, `krblastpwdchange` and `krbpwdpolicyreference` are declared
+    explicitly: `host_show` returns all four while introspection describes none of them. The
+    three Kerberos attributes are the same ones upstream already hand-declares for `user`,
+    so the omission is consistent across object classes rather than specific to `host`.
+  - `dn` is declared for `host`, as it now is for `group` and `role`.
+  - Rename is refused with a clear message. In FreeIPA a host's `fqdn` is immutable, because
+    the Kerberos principal and any issued certificates derive from it, and `host_mod` has no
+    rename option — sending one would draw error 3005, unknown option.
+  - `managedby_` joins the membership prefixes, making `managedby_host` multi-valued,
+    optional and skipped on write. It is maintained with `host_add_managedby` /
+    `host_remove_managedby`, never through `host_mod`.
+
+### Verified against live FreeIPA
+Import of all hosts with clean conversion — including the boolean attributes, the
+`__base64__` wrapper on `krbextradata` and the `__datetime__` wrapper on `krblastpwdchange`;
+create of a host whose name has no DNS record; `host_mod`; `host_del`; and the end-to-end
+case that motivated the work — the created host bound to `ar-teleport-iwg-inlg44789-ssh`
+via `hbacrule_add_host`, giving that rule both a user list and a host for the first time,
+then unbound and deleted to restore the baseline.
+
 ## [1.3.0.1] - 2026-09-03
 Round-4 findings from testing outbound user provisioning. 1.3.0.0 was an internal build,
 superseded before release — the version was bumped because an unchanged version string gives
