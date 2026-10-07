@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1.2] - 2026-10-07
+### Security
+- Bumped `httpclient5` 5.5 → 5.6.3, which also brings transitive
+  `httpcore5` / `httpcore5-h2` 5.3.4 → 5.4.3. Fixes connection leak on
+  Content-Encoding decode error (pool exhaustion DoS), HTTP/1 header
+  parsing memory-exhaustion DoS, and HPackDecoder unlimited header list
+  size before SETTINGS ACK.
+
 ## [1.2.1.1] - 2026-07-17
 ### Fixed
 - FreeIPA (4.12.2, API 2.254) / midPoint (4.10.3): Corrected remaining single-valued
