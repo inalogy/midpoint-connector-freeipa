@@ -19,10 +19,12 @@ import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.util.*;
 import java.net.URISyntaxException;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.classic.methods.HttpUriRequest;
 import org.apache.hc.client5.http.cookie.BasicCookieStore;
+import org.apache.hc.client5.http.cookie.Cookie;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.entity.UrlEncodedFormEntity;
@@ -42,6 +44,7 @@ import org.identityconnectors.common.security.GuardedString;
 import org.identityconnectors.framework.common.exceptions.AlreadyExistsException;
 import org.identityconnectors.framework.common.exceptions.ConnectorException;
 import org.identityconnectors.framework.common.exceptions.ConnectorIOException;
+import org.identityconnectors.framework.common.exceptions.ConnectorSecurityException;
 import org.identityconnectors.framework.common.exceptions.InvalidAttributeValueException;
 import org.identityconnectors.framework.common.exceptions.UnknownUidException;
 import org.identityconnectors.framework.common.objects.Attribute;
@@ -121,7 +124,10 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 	public static final String ATTR_IPANTHASH = "ipanthash"; // freeradius
 	public static final String ATTR_IPANTHOMEDIRECTORYDRIVE = "ipanthomedirectorydrive";
 
-    public static String COOKIE_VALUE = null;
+    private static final String SESSION_COOKIE_NAME = "ipa_session";
+
+    // per connector instance (each resource has its own FreeIPA session)
+    private volatile String sessionCookie = null;
 
 	public static final String ATTR_NOPRIVATE = "noprivate";
 	public static final String ATTR_GIDNUMBER = "gidnumber";
@@ -137,10 +143,10 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
 
 	// Free IPA schema cache
-	private static JSONObject schema = null;
+	private static volatile JSONObject schema = null;
 
 	// this should probably be done in a better way
-	private static Set<String> preserved_user_list = new HashSet<>();
+	private final Set<String> preserved_user_list = ConcurrentHashMap.newKeySet();
 
     @Override
     public void init(Configuration configuration) {
@@ -153,11 +159,14 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
     public CloseableHttpResponse execute(HttpUriRequest request) {
         try{
             BasicCookieStore cookieStore = new BasicCookieStore();
-            BasicClientCookie cookie = new BasicClientCookie("ipa_session", COOKIE_VALUE);
-            URI uri = new URI(getConfiguration().getServiceAddress());
-            cookie.setDomain(uri.getHost());
-            cookie.setPath(uri.getPath());
-            cookieStore.addCookie(cookie);
+            String cookieValue = sessionCookie;
+            if (cookieValue != null) {
+                BasicClientCookie cookie = new BasicClientCookie(SESSION_COOKIE_NAME, cookieValue);
+                URI uri = new URI(getConfiguration().getServiceAddress());
+                cookie.setDomain(uri.getHost());
+                cookie.setPath(uri.getPath());
+                cookieStore.addCookie(cookie);
+            }
 
             HttpClientContext context = HttpClientContext.create();
             context.setAttribute(HttpClientContext.COOKIE_STORE, cookieStore);
@@ -170,9 +179,18 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         }
     }
 
-    protected boolean login() {
-        boolean result = false;
+    /**
+     * Log in again unless another thread already replaced the stale session cookie.
+     */
+    protected synchronized void relogin(String staleCookie) {
+        if (sessionCookie != null && !sessionCookie.equals(staleCookie)) {
+            LOG.ok("Session cookie already refreshed by another thread");
+            return;
+        }
+        login();
+    }
 
+    protected synchronized boolean login() {
         // log in as post over HTTPS, Password Authentication see: https://vda.li/en/posts/2015/05/28/talking-to-freeipa-api-with-sessions/
         CloseableHttpClient client = getHttpClient();
 
@@ -203,13 +221,25 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         List<NameValuePair> params = new ArrayList<NameValuePair>();
         params.add(new BasicNameValuePair("user", getConfiguration().getUsername()));
         params.add(new BasicNameValuePair("password", password));
-        CloseableHttpResponse response;
-        try {
-            httpPost.setEntity(new UrlEncodedFormEntity(params));
-            response = client.execute(httpPost,context);
-            COOKIE_VALUE=context.getCookieStore().getCookies().get(0).getValue();
-            result=true;
-            LOG.info("Connector instance created, authnetication result is {0}", response);
+        httpPost.setEntity(new UrlEncodedFormEntity(params));
+        // response must be consumed and closed, otherwise the pooled connection stays leased forever
+        try (CloseableHttpResponse response = client.execute(httpPost, context)) {
+            int code = response.getCode();
+            EntityUtils.consume(response.getEntity());
+            if (code != 200) {
+                throw new ConnectorSecurityException("Cannot log in to FreeIPA as " + getConfiguration().getUsername() + ", HTTP status: " + code);
+            }
+            String cookieValue = null;
+            for (Cookie cookie : context.getCookieStore().getCookies()) {
+                if (SESSION_COOKIE_NAME.equals(cookie.getName())) {
+                    cookieValue = cookie.getValue();
+                }
+            }
+            if (cookieValue == null) {
+                throw new ConnectorSecurityException("FreeIPA login succeeded but no " + SESSION_COOKIE_NAME + " cookie was returned");
+            }
+            sessionCookie = cookieValue;
+            LOG.info("Logged in to FreeIPA, authentication result is {0}", code);
         } catch (UnsupportedEncodingException e) {
             LOG.error("cannot log in to freeIPA: " + e, e);
             throw new ConnectorIOException(e.getMessage(), e);
@@ -217,12 +247,13 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
             LOG.error("cannot log in to freeIPA: " + e, e);
             throw new ConnectorIOException(e.getMessage(), e);
         }
-        return result;
+        return true;
     }
 
     @Override
     public void dispose() {
         super.dispose();
+        sessionCookie = null;
         schema = null;
     }
 
@@ -426,27 +457,36 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
 
         StringEntity entity = new StringEntity( jo.toString(), ContentType.APPLICATION_JSON);
         request.setEntity(entity);
-        CloseableHttpResponse response = execute(request);
-        if (response.getCode()==401){
-            LOG.warn("401 - no cookie detected need to connect");
-            boolean logged= login();
-            if (logged){
-                closeResponse(response);
-                response = execute(request);
-            }
+        if (sessionCookie == null) {
+            relogin(null);
         }
+        String usedCookie = sessionCookie;
+        CloseableHttpResponse response = execute(request);
+        String result;
+        try {
+            if (response.getCode()==401){
+                LOG.ok("401 - FreeIPA session expired or missing, logging in again");
+                closeResponse(response);
+                response = null;
+                relogin(usedCookie);
+                response = execute(request);
+                if (response.getCode()==401){
+                    throw new ConnectorSecurityException("FreeIPA returned 401 even after re-login as " + getConfiguration().getUsername());
+                }
+            }
 //        LOG.warn("response: \n{0}", response);
 
-        String result;
-		try {
-			result = processFreeIpaResponseErrors(response);
-		} catch (ParseException e) {
-			throw new ConnectorIOException("Error parsing response from FreeIPA: "+response, e);
-		} catch (IOException e) {
-			throw new ConnectorIOException("Error call request from FreeIPA: "+request+", json: "+jo, e);
-		}
+            result = processFreeIpaResponseErrors(response);
+        } catch (ParseException e) {
+            throw new ConnectorIOException("Error parsing response from FreeIPA: "+response, e);
+        } catch (IOException e) {
+            throw new ConnectorIOException("Error call request from FreeIPA: "+request+", json: "+jo, e);
+        } finally {
+            if (response != null) {
+                closeResponse(response);
+            }
+        }
         LOG.ok("response body: \n{0}", result);
-        closeResponse(response);
 
         return new JSONObject(result);
     }
@@ -470,18 +510,15 @@ public class FreeIpaConnector extends AbstractRestConnector<FreeIpaConfiguration
         	// other specific codes...
 
         	if ("DuplicateEntry".equals(error_name)) {
-                closeResponse(response);
                 throw new AlreadyExistsException(error_message);
         	}
         	else if ("NotFound".equals(error_name)) {
-                closeResponse(response);
                 throw new UnknownUidException(error_message);
         	}
         	else if ("EmptyModlist".equals(error_name) || "AlreadyActive".equals(error_name) || "AlreadyInactive".equals(error_name)) {
         		LOG.warn("Ignoring request error message: {0}", result);
         	} else {
             	// general error
-                closeResponse(response);
                 throw new ConnectorIOException("Error: " + error + " when parsing result: " + result);
         	}
         }

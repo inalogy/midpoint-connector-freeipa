@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1.3] - 2026-10-20
+### Fixed
+- Memory / connection leak (midPoint 4.10.5): the `login()` response was never
+  consumed nor closed, so every re-login (`401 - no cookie detected` warning)
+  left one pooled HTTP connection leased forever. Pool exhaustion then blocked
+  worker threads and heap kept growing.
+- Session cookie was a `public static` field shared by all connector instances,
+  resources and threads: the first request always got 401, parallel threads
+  logged in concurrently and multiple FreeIPA resources overwrote each other's
+  session. The cookie is now per connector instance, login is synchronized and
+  skipped when another thread already refreshed the session, and the first
+  request logs in up front.
+- Response is now closed on every path in `callRequest()` (also on errors), and
+  a repeated 401 after re-login fails with `ConnectorSecurityException`.
+- `preserved_user_list` is now a per-instance concurrent set (was a static,
+  unsynchronized `HashSet` written by parallel tasks).
+
 ## [1.2.1.2] - 2026-10-07
 ### Security
 - Bumped `httpclient5` 5.5 → 5.6.3, which also brings transitive
